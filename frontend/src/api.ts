@@ -33,6 +33,14 @@ export interface PairInfo {
   digest: string | null;
 }
 
+export interface MatchedFirmware {
+  version_id: string;
+  container_ref: string;
+  tag: string;
+  cached: boolean;
+  imswitch_tag: string | null;
+}
+
 export interface CachedVersion {
   category: "images" | "firmware";
   version_id: string;
@@ -43,26 +51,36 @@ export interface CachedVersion {
   channel?: string;
   head_sha?: string;
   tag?: string;
+  source_kind?: "container" | "release" | "odmr";
+  container_ref?: string;
   prerelease?: boolean;
   pair?: { imswitch?: PairInfo; firmware_server?: PairInfo };
+  matched_firmware?: MatchedFirmware | null;
   [k: string]: unknown;
 }
 
-export interface FirmwareRelease {
+export interface FirmwareBundle {
   version_id: string;
   name: string;
-  prerelease: boolean;
-  published_at: string;
+  source_kind: "container" | "release" | "odmr";
+  tag: string;
   cached: boolean;
-  asset_count: number;
+  container_ref?: string;
+  matches_image?: string;
+  prerelease?: boolean;
+  published_at?: string;
+  asset_count?: number;
 }
 
 export interface FirmwareVariant {
   id: string;
   name: string;
   chip_family: string | null;
+  category: "standalone" | "can-master" | "can-slave" | "bridge" | "odmr" | "other";
+  tests: string[];
   file: string;
-  category: "standalone" | "can-master" | "can-slave" | "bridge" | "other";
+  description: string;
+  can_axis: string | null;
 }
 
 export interface BlockDevice {
@@ -99,8 +117,51 @@ export interface Job {
   log?: string[];
 }
 
+export interface TestAction {
+  id: string;
+  name: string;
+  per_axis?: boolean;
+  per_channel?: boolean;
+  confirm?: string;
+  danger?: boolean;
+}
+
+export interface TestGroup {
+  id: string;
+  name: string;
+  icon: string;
+  prompt: string;
+  actions: TestAction[];
+  axes?: string[];
+  channels?: number[];
+  master_only?: boolean;
+  available: boolean;
+}
+
+export interface TestConnection {
+  connected: boolean;
+  port?: string;
+  baud?: number;
+  is_master?: boolean;
+  board_hint?: string;
+  capabilities?: string[];
+  firmware?: Record<string, unknown> | null;
+  identify_error?: string;
+}
+
+export interface TestRunResult {
+  group: string;
+  action: string;
+  args: Record<string, unknown>;
+  duration_s: number;
+  result: unknown;
+}
+
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message);
   }
 }
@@ -139,13 +200,30 @@ export const api = {
       `/api/versions/images?remote=${remote}`,
     ),
   firmware: (remote = true) =>
-    request<{ available: FirmwareRelease[]; cached: CachedVersion[]; error: string | null }>(
+    request<{ available: FirmwareBundle[]; cached: CachedVersion[]; error: string | null }>(
       `/api/versions/firmware?remote=${remote}`,
     ),
   firmwareVariants: (versionId: string) =>
-    request<FirmwareVariant[]>(`/api/versions/firmware/${encodeURIComponent(versionId)}/variants`),
+    request<FirmwareVariant[]>(
+      `/api/versions/firmware/${encodeURIComponent(versionId)}/variants`,
+    ),
+  imagePair: (versionId: string) =>
+    request<{
+      version_id: string;
+      pair: { imswitch?: PairInfo; firmware_server?: PairInfo };
+      matched_firmware: MatchedFirmware | null;
+      cached: boolean;
+    }>(`/api/versions/images/${encodeURIComponent(versionId)}/pair`),
+  imageFirmware: (versionId: string) =>
+    request<{ match: MatchedFirmware | null; variants: FirmwareVariant[] }>(
+      `/api/versions/images/${encodeURIComponent(versionId)}/firmware`,
+    ),
   downloadImage: (versionId: string) =>
     request<Job>(`/api/versions/images/${encodeURIComponent(versionId)}/download`, {
+      method: "POST",
+    }),
+  downloadMatchingFirmware: (versionId: string) =>
+    request<Job>(`/api/versions/images/${encodeURIComponent(versionId)}/download-firmware`, {
       method: "POST",
     }),
   downloadFirmware: (versionId: string) =>
@@ -153,10 +231,9 @@ export const api = {
       method: "POST",
     }),
   deleteVersion: (category: string, versionId: string) =>
-    request<{ deleted: string }>(
-      `/api/versions/${category}/${encodeURIComponent(versionId)}`,
-      { method: "DELETE" },
-    ),
+    request<{ deleted: string }>(`/api/versions/${category}/${encodeURIComponent(versionId)}`, {
+      method: "DELETE",
+    }),
   checkUpdates: (auto = false) =>
     request<Record<string, unknown>>(`/api/versions/check?auto_download=${auto}`, {
       method: "POST",
@@ -177,11 +254,6 @@ export const api = {
     baud?: number;
     erase_first?: boolean;
   }) => request<Job>("/api/esp/flash", { method: "POST", body: JSON.stringify(body) }),
-  espSerial: (body: { port: string; payload: string; baud?: number; read_seconds?: number }) =>
-    request<{ response: string }>("/api/esp/serial", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
 
   production: () =>
     request<{
@@ -192,7 +264,32 @@ export const api = {
 
   jobs: () => request<Job[]>("/api/jobs"),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
-  cancelJob: (id: string) => request<{ cancelled: string }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+  cancelJob: (id: string) =>
+    request<{ cancelled: string }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
+
+  // -- hardware testing --------------------------------------------------
+  testGroups: () =>
+    request<{ groups: TestGroup[]; connection: TestConnection }>("/api/test/groups"),
+  testStatus: () => request<TestConnection>("/api/test/status"),
+  testConnect: (port: string, baud?: number) =>
+    request<TestConnection>("/api/test/connect", {
+      method: "POST",
+      body: JSON.stringify({ port, baud }),
+    }),
+  testDisconnect: () =>
+    request<TestConnection>("/api/test/disconnect", { method: "POST" }),
+  testRun: (group: string, action: string, args: Record<string, unknown> = {}) =>
+    request<TestRunResult>("/api/test/run", {
+      method: "POST",
+      body: JSON.stringify({ group, action, args }),
+    }),
+  testParams: () =>
+    request<{ values: Record<string, any>; schema: Record<string, any> }>("/api/test/params"),
+  putTestParams: (patch: Record<string, unknown>) =>
+    request<{ values: Record<string, any>; schema: Record<string, any> }>("/api/test/params", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
 };
 
 export function fmtBytes(n: number | null | undefined): string {
@@ -201,4 +298,8 @@ export function fmtBytes(n: number | null | undefined): string {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(0)} kB`;
   return `${n} B`;
+}
+
+export function isActive(job: Job): boolean {
+  return job.state === "pending" || job.state === "running";
 }

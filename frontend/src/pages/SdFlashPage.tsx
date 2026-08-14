@@ -1,23 +1,39 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, BlockDevice, CachedVersion, fmtBytes } from "../api";
+import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  Grid,
+  Stack,
+  Typography,
+} from "@mui/material";
+import SdCardIcon from "@mui/icons-material/SdCard";
+import UsbIcon from "@mui/icons-material/Usb";
+import MemoryIcon from "@mui/icons-material/Memory";
+import { api, fmtBytes, type BlockDevice } from "../api";
+import { useJobs } from "../JobsContext";
+import { useSelection } from "../SelectionContext";
 import { JobPanel } from "../components/JobPanel";
-import { ConfirmDialog } from "../components/Modal";
+import { ConfirmDialog } from "../components/Confirm";
+import { PageHeader, SectionLabel } from "../components/PageHeader";
+import { SelectCard } from "../components/SelectCard";
 
-/** Flash a cached os-rpi image onto an SD card. */
 export function SdFlashPage() {
+  const { images, imageVersion, setImageVersion, image, matched } = useSelection();
+  const { track, findActive } = useJobs();
   const [devices, setDevices] = useState<BlockDevice[]>([]);
-  const [cached, setCached] = useState<CachedVersion[]>([]);
-  const [device, setDevice] = useState<string>("");
-  const [versionId, setVersionId] = useState<string>("");
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [device, setDevice] = useState("");
   const [confirm, setConfirm] = useState(false);
-  const [error, setError] = useState<string>("");
+  const [error, setError] = useState("");
+
+  // Re-attach to a write that is already running (e.g. started, then the
+  // technician switched pages and came back).
+  const runningJob = findActive("flash-sdcard");
 
   const refresh = useCallback(async () => {
     try {
-      const [devs, imgs] = await Promise.all([api.sdDevices(), api.images(false)]);
-      setDevices(devs);
-      setCached(imgs.cached.filter((v) => v.complete));
+      setDevices(await api.sdDevices());
     } catch (e) {
       setError(String(e));
     }
@@ -30,113 +46,154 @@ export function SdFlashPage() {
   }, [refresh]);
 
   const selectedDevice = devices.find((d) => d.device === device);
-  const selectedVersion = cached.find((v) => v.version_id === versionId);
 
   const start = async () => {
     setConfirm(false);
     setError("");
     try {
-      const job = await api.sdFlash(device, versionId);
-      setJobId(job.id);
+      track(await api.sdFlash(device, imageVersion!));
     } catch (e) {
       setError(String(e));
     }
   };
 
   return (
-    <div>
-      <h1>Flash SD card</h1>
-      <p className="subtitle">Write an openUC2 OS image (ImSwitch + firmware server) to an SD card.</p>
+    <Box>
+      <PageHeader
+        title="Flash SD card"
+        subtitle="Write an openUC2 OS image (ImSwitch + firmware server) to an SD card."
+      />
 
-      {error && <div className="error-box">{error}</div>}
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>1 · Image version</h2>
-        {cached.length === 0 && (
-          <div className="statusline">
-            No images cached yet — download one in the Library tab first.
-          </div>
-        )}
-        <div className="cardlist">
-          {cached.map((v) => (
-            <div
-              key={v.version_id}
-              className={`card${versionId === v.version_id ? " selected" : ""}`}
-              onClick={() => setVersionId(v.version_id)}
-            >
-              <div className="title">
-                {v.version_id}
-                {v.channel && <span className={`badge ${v.channel}`}>{v.channel}</span>}
-              </div>
-              <div className="sub">{fmtBytes(v.size_bytes)}</div>
-              {v.pair?.imswitch && (
-                <div className="sub">imswitch: {v.pair.imswitch.tag}</div>
-              )}
-              {v.pair?.firmware_server && (
-                <div className="sub">fw-server: {v.pair.firmware_server.tag}</div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="panel">
-        <h2 style={{ marginTop: 0 }}>2 · SD card</h2>
-        {devices.length === 0 && (
-          <div className="statusline">No removable drives detected — insert an SD card.</div>
-        )}
-        <div className="cardlist">
-          {devices.map((d) => (
-            <div
-              key={d.device}
-              className={`card${device === d.device ? " selected" : ""}${
-                d.writable_target ? "" : " disabled"
-              }`}
-              onClick={() => d.writable_target && setDevice(d.device)}
-            >
-              <div className="title">{d.device}</div>
-              <div className="sub">
-                {d.model || "Unknown"} · {fmtBytes(d.size_bytes)} · {d.transport || "?"}
-              </div>
-              {d.mountpoints.length > 0 && <div className="sub">mounted: {d.mountpoints.join(", ")}</div>}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="panel">
-        <button
-          className="btn primary big"
-          disabled={!device || !versionId || !!jobId}
-          onClick={() => setConfirm(true)}
-        >
-          Flash {selectedVersion?.version_id ?? "image"} → {device || "…"}
-        </button>
-        {jobId && (
-          <div style={{ marginTop: 16 }}>
-            <JobPanel jobId={jobId} onDone={() => { setJobId(null); refresh(); }} />
-          </div>
-        )}
-      </div>
-
-      {confirm && selectedDevice && (
-        <ConfirmDialog
-          title="Erase and write SD card?"
-          danger
-          message={
-            <>
-              <p>
-                ALL DATA on <strong>{selectedDevice.device}</strong> (
-                {selectedDevice.model || "unknown"}, {fmtBytes(selectedDevice.size_bytes)}) will be
-                erased and replaced with <strong>{versionId}</strong>.
-              </p>
-            </>
-          }
-          confirmLabel="Erase & Flash"
-          onConfirm={start}
-          onCancel={() => setConfirm(false)}
-        />
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
       )}
-    </div>
+
+      <SectionLabel>1 · Image version</SectionLabel>
+      {images.length === 0 ? (
+        <Alert severity="info">
+          No images cached yet — download one from the Library first.
+        </Alert>
+      ) : (
+        <Grid container spacing={1.5}>
+          {images.map((v) => (
+            <Grid key={v.version_id} size={{ xs: 12, sm: 6, md: 4 }}>
+              <SelectCard
+                icon={<MemoryIcon />}
+                selected={imageVersion === v.version_id}
+                onClick={() => setImageVersion(v.version_id)}
+                title={v.version_id}
+                badges={
+                  v.channel ? (
+                    <Chip
+                      size="small"
+                      label={v.channel}
+                      color={v.channel === "stable" ? "success" : "default"}
+                    />
+                  ) : null
+                }
+                lines={[
+                  fmtBytes(v.size_bytes),
+                  v.pair?.imswitch ? `ImSwitch ${v.pair.imswitch.tag}` : null,
+                  v.pair?.firmware_server ? `firmware ${v.pair.firmware_server.tag}` : null,
+                ]}
+              />
+            </Grid>
+          ))}
+        </Grid>
+      )}
+
+      {image && matched && (
+        <Alert
+          severity={matched.cached ? "success" : "warning"}
+          sx={{ mt: 2 }}
+          action={
+            !matched.cached ? (
+              <Button
+                color="inherit"
+                onClick={async () => {
+                  try {
+                    track(await api.downloadMatchingFirmware(image.version_id));
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                }}
+              >
+                Get firmware
+              </Button>
+            ) : undefined
+          }
+        >
+          Matching ESP32 firmware <strong>{matched.tag}</strong>{" "}
+          {matched.cached ? "is cached and ready to flash." : "is not cached yet."}
+        </Alert>
+      )}
+
+      <SectionLabel>2 · SD card</SectionLabel>
+      {devices.length === 0 ? (
+        <Alert severity="info">No removable drives detected — insert an SD card.</Alert>
+      ) : (
+        <Grid container spacing={1.5}>
+          {devices.map((d) => (
+            <Grid key={d.device} size={{ xs: 12, sm: 6, md: 4 }}>
+              <SelectCard
+                icon={d.transport === "usb" ? <UsbIcon /> : <SdCardIcon />}
+                selected={device === d.device}
+                disabled={!d.writable_target}
+                onClick={() => setDevice(d.device)}
+                title={d.device}
+                badges={
+                  !d.writable_target ? (
+                    <Chip size="small" color="error" label="protected" />
+                  ) : null
+                }
+                lines={[
+                  `${d.model || "Unknown"} · ${fmtBytes(d.size_bytes)} · ${d.transport || "?"}`,
+                  d.mountpoints.length ? `mounted: ${d.mountpoints.join(", ")}` : null,
+                ]}
+              />
+            </Grid>
+          ))}
+        </Grid>
+      )}
+
+      <Box sx={{ mt: 3 }}>
+        {runningJob ? (
+          <JobPanel jobId={runningJob.id} onDone={refresh} />
+        ) : (
+          <Button
+            variant="contained"
+            size="large"
+            fullWidth
+            disabled={!device || !imageVersion}
+            onClick={() => setConfirm(true)}
+            startIcon={<SdCardIcon />}
+          >
+            Flash {imageVersion ?? "image"} → {device || "select a card"}
+          </Button>
+        )}
+      </Box>
+
+      <ConfirmDialog
+        open={confirm && !!selectedDevice}
+        title="Erase and write SD card?"
+        danger
+        confirmLabel="Erase & flash"
+        onConfirm={start}
+        onCancel={() => setConfirm(false)}
+      >
+        <Stack spacing={1}>
+          <Typography>
+            All data on <strong>{selectedDevice?.device}</strong> (
+            {selectedDevice?.model || "unknown"}, {fmtBytes(selectedDevice?.size_bytes)}) will
+            be erased and replaced with <strong>{imageVersion}</strong>.
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            This takes several minutes and cannot be undone.
+          </Typography>
+        </Stack>
+      </ConfirmDialog>
+    </Box>
   );
 }

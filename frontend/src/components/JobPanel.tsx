@@ -1,86 +1,134 @@
-import { useEffect, useRef, useState } from "react";
-import { api, Job } from "../api";
+import { useEffect, useRef } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  LinearProgress,
+  Stack,
+  Typography,
+} from "@mui/material";
+import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import ErrorIcon from "@mui/icons-material/Error";
+import StopCircleIcon from "@mui/icons-material/StopCircle";
+import { useJobLog, useJobs } from "../JobsContext";
+import { isActive } from "../api";
 
-/** Polls a job until it reaches a terminal state; shows progress + log. */
+/**
+ * Shows a backend job's progress and log.  State comes from the shared jobs
+ * poll, so this re-attaches instantly to work started on another page.
+ */
 export function JobPanel({
   jobId,
   onDone,
+  compact,
 }: {
   jobId: string;
-  onDone?: (job: Job) => void;
+  onDone?: () => void;
+  compact?: boolean;
 }) {
-  const [job, setJob] = useState<Job | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
-  const doneRef = useRef(false);
+  const { byId, cancel } = useJobs();
+  const job = byId(jobId);
+  const log = useJobLog(jobId);
+  const logRef = useRef<HTMLPreElement>(null);
+  const notified = useRef(false);
 
   useEffect(() => {
-    doneRef.current = false;
-    let stop = false;
-    const tick = async () => {
-      try {
-        const j = await api.job(jobId);
-        if (stop) return;
-        setJob(j);
-        const terminal = j.state === "success" || j.state === "failed" || j.state === "cancelled";
-        if (terminal) {
-          if (!doneRef.current) {
-            doneRef.current = true;
-            onDone?.(j);
-          }
-          return;
-        }
-      } catch {
-        /* keep polling; backend may be busy */
-      }
-      if (!stop) setTimeout(tick, 700);
-    };
-    tick();
-    return () => {
-      stop = true;
-    };
-  }, [jobId]);
+    if (job && !isActive(job) && !notified.current) {
+      notified.current = true;
+      onDone?.();
+    }
+  }, [job, onDone]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [job?.log?.length]);
+  }, [log.length]);
 
-  if (!job) return <div className="statusline">Starting job…</div>;
+  if (!job) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        Starting…
+      </Typography>
+    );
+  }
 
   const pct = Math.round(job.progress * 100);
-  const running = job.state === "pending" || job.state === "running";
+  const running = isActive(job);
 
   return (
-    <div>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <div className="grow">
-          <strong>{job.title}</strong>
-          <div className="statusline">
-            {job.state === "success" && <span className="ok-text">✓ Done</span>}
-            {job.state === "failed" && <span style={{ color: "var(--danger)" }}>✗ Failed</span>}
-            {job.state === "cancelled" && "Cancelled"}
-            {running && (job.phase || "Working…")}
-            {" · "}
-            {pct}%
-          </div>
-        </div>
-        {running && (
-          <button className="btn danger" onClick={() => api.cancelJob(job.id).catch(() => {})}>
-            Cancel
-          </button>
-        )}
-      </div>
-      <div className="progress-outer">
-        <div
-          className={`progress-inner${job.state === "failed" ? " failed" : ""}`}
-          style={{ width: `${pct}%` }}
+    <Card variant="outlined">
+      <CardContent>
+        <Stack direction="row" spacing={2} sx={{ mb: 1.5, alignItems: "center" }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="subtitle1" noWrap sx={{ fontWeight: 700 }}>
+              {job.title}
+            </Typography>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              {job.state === "success" && (
+                <Chip
+                  size="small"
+                  color="success"
+                  icon={<CheckCircleIcon />}
+                  label="Done"
+                />
+              )}
+              {job.state === "failed" && (
+                <Chip size="small" color="error" icon={<ErrorIcon />} label="Failed" />
+              )}
+              {job.state === "cancelled" && (
+                <Chip size="small" icon={<StopCircleIcon />} label="Cancelled" />
+              )}
+              <Typography variant="body2" color="text.secondary" noWrap>
+                {running ? job.phase || "Working…" : ""} {running ? `· ${pct}%` : ""}
+              </Typography>
+            </Stack>
+          </Box>
+          {running && (
+            <Button color="error" variant="outlined" onClick={() => cancel(job.id)}>
+              Cancel
+            </Button>
+          )}
+        </Stack>
+
+        <LinearProgress
+          variant={running && pct === 0 ? "indeterminate" : "determinate"}
+          value={pct}
+          color={job.state === "failed" ? "error" : "primary"}
+          sx={{ height: 12, borderRadius: 6 }}
         />
-      </div>
-      {job.error && <div className="error-box">{job.error}</div>}
-      {job.log && job.log.length > 0 && (
-        <div className="joblog" ref={logRef} style={{ marginTop: 10 }}>
-          {job.log.join("\n")}
-        </div>
-      )}
-    </div>
+
+        {job.error && (
+          <Alert severity="error" sx={{ mt: 2 }} className="selectable">
+            {job.error}
+          </Alert>
+        )}
+
+        {!compact && log.length > 0 && (
+          <Box
+            component="pre"
+            ref={logRef}
+            className="selectable"
+            sx={{
+              mt: 2,
+              mb: 0,
+              p: 1.5,
+              maxHeight: 220,
+              overflowY: "auto",
+              bgcolor: "#1e1e1e",
+              color: "#d4d4d4",
+              borderRadius: 2,
+              fontFamily: "Consolas, Monaco, monospace",
+              fontSize: 12,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {log.join("\n")}
+          </Box>
+        )}
+      </CardContent>
+    </Card>
   );
 }

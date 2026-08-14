@@ -45,21 +45,52 @@ flowchart TB
     osrpi_ci --> gdrive
 ```
 
-### The "matching pair"
+### The "matching pair" — how the station guarantees it
 
-Every os-rpi commit pins exact container digests in its compose files:
+Every os-rpi commit pins exact container references in its compose files:
 
 | File in os-rpi | Pins | Example |
 |---|---|---|
-| `deployments/imswitch.pkg/deployment.compose.yml` | ImSwitch server | `ghcr.io/openuc2/imswitch:sha-d63daae@sha256:e6b8…` |
-| `deployments/firmware.pkg/deployment.compose.yml` | Firmware server | `ghcr.io/youseetoo/firmware-image-server:v2026.0.0-beta.2@sha256:5d42…` |
+| `deployments/imswitch.pkg/deployment.compose.yml` | ImSwitch server | `ghcr.io/openuc2/imswitch:sha-50eee42` |
+| `deployments/firmware.pkg/deployment.compose.yml` | Firmware server | `ghcr.io/youseetoo/firmware-image-server:sha-d55081b` |
 
-So for any image (identified by its commit sha, which is part of the artifact
-name, e.g. `os-rpi-pr-285-`**`6d00c59`**`.img.xz`) the station does a
-**reverse lookup**: it fetches those two compose files at that commit and
-shows which ImSwitch build and which firmware-server version are inside the
-image. The `firmware-image-server` version tag equals the uc2-esp32 release
-tag — that is the link between an SD image and the matching ESP32 binaries.
+For any image — identified by the commit sha embedded in its artifact name,
+e.g. `os-rpi-pr-285-`**`6d00c59`**`.img.xz` — the station does a **reverse
+lookup**: it reads those two compose files at that commit and learns exactly
+which ImSwitch build and which firmware server are baked into the image.
+
+The crucial part: **the firmware-image-server container *is* the firmware
+bundle.** It ships the matching `.bin` files under `/srv` and serves them to
+the microscope over HTTP. So instead of guessing which uc2-esp32 release
+corresponds to an image (the pin is often a `sha-…` tag with no release at
+all), the station pulls that exact container from GHCR and extracts its
+binaries:
+
+```mermaid
+flowchart LR
+    img["SD image<br/>os-rpi-…-6d00c59.img.xz"]
+    commit["os-rpi commit 6d00c59"]
+    compose["deployments/firmware.pkg/<br/>deployment.compose.yml"]
+    ref["ghcr.io/youseetoo/<br/>firmware-image-server:sha-d55081b"]
+    bins["/srv/*_merged.bin<br/>(18 flashable boards)"]
+    img --> commit --> compose --> ref -->|"OCI pull<br/>(no docker needed)"| bins
+```
+
+This is the same "forklift" idea the Pi itself uses, applied at provisioning
+time. Selecting an image in the UI therefore *locks* the ESP32 page to the
+firmware bundle that belongs with it; an explicit "Any firmware" switch is
+required to break the pairing.
+
+Two other firmware sources exist for boards that are not part of an SD
+image: **uc2-esp32 GitHub releases** (friendly-named merged binaries), and
+the **ODMR** boards, whose full 4 MB images live in `youseetoo.github.io`
+under `static/firmware_build/odmr-xiao-esp32{s3,c3}.bin`.
+
+> **Merged vs app-only:** both the container and the releases ship
+> `esp32_<env>.bin` (app only, belongs at `0x10000`) *and*
+> `esp32_<env>_merged.bin` (bootloader + partitions + app, belongs at `0x0`).
+> The board catalog only ever selects merged images — writing an app-only
+> binary at offset 0 produces a board that never boots.
 
 ## 2. What runs on the microscope's Raspberry Pi
 
@@ -168,24 +199,63 @@ sequenceDiagram
 |---|---|
 | `config.py` | settings (env + persisted JSON), production mode flag |
 | `github.py` | GitHub API: artifact/release listing, streamed downloads, pair lookup |
+| `oci.py` | minimal OCI/GHCR client — pull firmware binaries out of a container |
 | `cache.py` | versioned cache dirs with `meta.json`, pruning, disk stats |
-| `sync.py` | orchestration: what to download for a version, checksums, catalog |
+| `boards.py` | board catalog: binary filename → board, chip, category, tests |
+| `sync.py` | orchestration: images, the three firmware sources, checksums |
 | `sdcard.py` | block-device detection (lsblk/diskutil) + streaming image write |
-| `espflash.py` | serial port listing, esptool erase/write subprocess, serial test cmds |
+| `espflash.py` | serial port listing, esptool erase/write subprocess |
+| `hwtest.py` | UC2-REST connection + test actions, CAN master awareness |
+| `testparams.py` | editable hardware-test parameter document |
 | `jobs.py` | threaded job engine with progress/log/cancel |
 | `api/routes.py` | REST + WebSocket surface for the UI |
 
-## 6. Hardware testing (next step — scaffolding in place)
+Frontend state is deliberately kept out of the pages:
+`JobsContext` polls `/api/jobs` station-wide (so a download survives
+navigation and any page can re-attach to it), and `SelectionContext` holds
+the selected SD image, which is what enforces the firmware pairing.
 
-UC2 firmware speaks JSON over serial (115200), e.g.:
+## 6. Hardware testing
 
-```json
-{"task": "/motor_act", "motor": {"steppers": [{"stepperid": 1, "position": 1000, "speed": 5000, "isabs": 0}]}}
-{"task": "/laser_act", "LASERid": 1, "LASERval": 512}
-{"task": "/home_act", "home": {"steppers": [{"stepperid": 1, "timeout": 10000, "speed": 15000}]}}
+Tests run through **UC2-REST** (`uc2rest.UC2Client`), not raw serial writes,
+so the station inherits its command encoding, axis mapping and firmware
+handshake. UC2-REST is serial-only; the baud rate is selectable per session
+(115200 is the firmware console default, 921600 for fast-console boards).
+
+```mermaid
+flowchart LR
+    ui["Testing pages<br/>(motor / laser / LED / galvo / CAN)"]
+    be["HardwareManager"]
+    rest["uc2rest.UC2Client"]
+    hat["CAN master (HAT)"]
+    slaves["motor X/Y/Z · laser · LED · galvo"]
+    standalone["standalone board"]
+    ui -->|"POST /api/test/run"| be --> rest -->|USB serial| hat
+    rest -->|USB serial| standalone
+    hat -->|"CAN — transparent routing"| slaves
 ```
 
-The backend already exposes `POST /api/esp/serial` which opens the port,
-sends one command and returns the response — the planned test-checklist UI
-(homing check, laser channel check, "is the motor moving right?" prompts)
-builds directly on this endpoint.
+**The HAT is special.** A CAN master accepts the whole command set and
+forwards motor/laser/LED commands over the bus to the addressed module, so
+the same test buttons work against a single board or an entire microscope.
+Bus-level operations (scan, node-id assignment) are offered only when the
+connected board reports `isMaster`.
+
+Conventions the tests rely on:
+
+| Thing | Value |
+|---|---|
+| Axis ids | A=0, X=1, Y=2, Z=3 |
+| Laser channels | 1=R, 2=G, 3=B, value 0–1023 |
+| LED intensity | RGB tuple, 0–255 per channel |
+| Galvo DAC range | 0–4095 (park = frequency 0, amplitude 0, fixed offset) |
+| CAN node ids | master 1 · motor X/Y/Z 11/12/13 · laser 20+id · LED 30 · GPIO 60 · PTZ 61 |
+
+Every test command's parameters (step counts, speeds, homing direction and
+endstop polarity, laser power, LED intensity, galvo sweep) are stored in
+`test_params.json` and editable from Settings — the same pattern as the
+GitHub token, so a batch can be re-tuned without touching code.
+
+A test is only marked **passed** when the technician confirms the physical
+result ("Did the axis move in the positive direction?"). Commands that throw
+are recorded as failures automatically.

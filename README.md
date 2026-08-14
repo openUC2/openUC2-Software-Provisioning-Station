@@ -7,21 +7,25 @@ WebSerial, no internet dependency once versions are cached.
 
 **What it does**
 
-- ⬇ **Pre-downloads** the latest `os-rpi` SD card images (GitHub Actions
+- **Pre-downloads** the latest `os-rpi` SD card images (GitHub Actions
   artifacts) and `uc2-esp32` firmware releases, periodically or on demand
-- 💾 **Flashes SD cards** — streams the `.img.xz` straight onto the card
+- **Flashes SD cards** — streams the `.img.xz` straight onto the card
   with progress, checksum verification and safe device detection
-- 🔌 **Flashes ESP32 boards** — full `esptool` **erase** then **write** of
+- **Flashes ESP32 boards** — full `esptool` **erase** then **write** of
   merged binaries at offset `0x0`, selectable baud rate, per-module variants
-  (standalone v2/v3/v4, CAN master, motor X/Y/Z/A, laser, LED, …)
-- 🔗 Shows the **matching pair** per image: which `ghcr.io/openuc2/imswitch`
-  build and which firmware-server version are baked into it
-- 📚 **Version library** with disk management: keep N versions, delete old
+  (standalone v2/v3/v4, CAN master, motor X/Y/Z/A, laser, LED, galvo, ODMR …)
+- **Enforces the matching pair**: picking an SD image locks the ESP32 page to
+  the firmware pinned in that image's os-rpi deployment files — the station
+  pulls that exact `firmware-image-server` container from GHCR and flashes
+  the binaries out of it (no docker required)
+- **Tests the hardware** after flashing — motor moves and homing per axis,
+  laser channels, LED matrix, galvo sweeps, CAN bus scan — driven through
+  [UC2-REST](https://github.com/openUC2/UC2-REST), with a technician
+  pass/fail prompt per check
+- **Version library** with disk management: keep N versions, delete old
   ones, all cached locally for offline flashing
-- 🏭 **Production mode**: locked one-button screen — flashes the latest
+- **Production mode**: locked one-button screen — flashes the latest
   cached stable version, shows the version number, nothing else to get wrong
-- 🧪 Hardware-test scaffolding: JSON-over-serial command endpoint
-  (`/motor_act`, `/laser_act`, …) for the upcoming test-checklist feature
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for diagrams of where every
 artifact comes from (ImSwitch → docker → os-rpi image; uc2-esp32 → merged
@@ -89,25 +93,32 @@ The UI is a thin client over a REST API — everything is scriptable:
 ```
 GET  /api/status                     station status + disk usage
 GET  /api/versions/images            available (GitHub) + cached images
-GET  /api/versions/firmware          available + cached firmware releases
+GET  /api/versions/firmware          available + cached firmware bundles
 POST /api/versions/<cat>/<id>/download
 POST /api/versions/check?auto_download=true
+GET  /api/versions/images/<id>/pair       pinned ImSwitch + firmware versions
+GET  /api/versions/images/<id>/firmware   the matching bundle and its boards
+POST /api/versions/images/<id>/download-firmware
 GET  /api/versions/firmware/<id>/variants
 GET  /api/sdcard/devices             removable drives (system disks filtered)
 POST /api/sdcard/flash               {device, version_id}
 GET  /api/esp/ports                  USB serial ports (CP210x/CH340/… tagged)
 POST /api/esp/flash                  {port, version_id, variant_id, baud, erase_first}
-POST /api/esp/serial                 {port, payload} — UC2 JSON test commands
+POST /api/esp/serial                 {port, payload} — raw UC2 JSON escape hatch
 GET  /api/jobs/<id>                  progress + log (also WS /api/jobs/<id>/ws)
+
+GET  /api/test/groups                test catalog + what the board supports
+POST /api/test/connect               {port, baud} — opens a UC2-REST session
+POST /api/test/run                   {group, action, args}
+GET  /api/test/params                editable test parameters (+ PUT)
 ```
 
 ## Roadmap
 
-- [ ] Hardware test checklists after flashing (homing, laser channels,
-      "is the motor moving right?" pass/fail per unit)
+- [ ] Record test results per serial number and export a production report
+- [ ] Assign CAN node ids from the station after flashing a slave module
 - [ ] Import images from USB stick / Google Drive archive (offline seeding)
-- [ ] Ship the station itself as a flashable SD image via CI (like the
-      solar microscope build)
+- [ ] Ship the station itself as a flashable SD image via CI
 
 ## Repo layout
 

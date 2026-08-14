@@ -1,24 +1,39 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Grid,
+  IconButton,
+  Stack,
+  Typography,
+} from "@mui/material";
+import SettingsIcon from "@mui/icons-material/Settings";
+import SdCardIcon from "@mui/icons-material/SdCard";
+import BoltIcon from "@mui/icons-material/Bolt";
+import {
   api,
-  BlockDevice,
-  CachedVersion,
-  FirmwareVariant,
-  SerialPort,
   fmtBytes,
+  type BlockDevice,
+  type CachedVersion,
+  type FirmwareVariant,
+  type SerialPort,
 } from "../api";
+import { useJobs } from "../JobsContext";
 import { JobPanel } from "../components/JobPanel";
-import { ConfirmDialog } from "../components/Modal";
+import { ConfirmDialog } from "../components/Confirm";
 
-/** Locked production screen: one-button flashing of the latest cached
- * versions. No version dropdowns — just "what am I flashing" buttons. */
+/** Locked assembly-line screen: latest cached versions, one button each. */
 export function ProductionPage({ onExit }: { onExit: () => void }) {
+  const { track, active } = useJobs();
   const [image, setImage] = useState<CachedVersion | null>(null);
   const [firmware, setFirmware] = useState<CachedVersion | null>(null);
   const [variants, setVariants] = useState<FirmwareVariant[]>([]);
   const [devices, setDevices] = useState<BlockDevice[]>([]);
   const [ports, setPorts] = useState<SerialPort[]>([]);
-  const [jobId, setJobId] = useState<string | null>(null);
   const [confirmSd, setConfirmSd] = useState<BlockDevice | null>(null);
   const [error, setError] = useState("");
 
@@ -49,8 +64,7 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
     setConfirmSd(null);
     if (!image) return;
     try {
-      const job = await api.sdFlash(device.device, image.version_id);
-      setJobId(job.id);
+      track(await api.sdFlash(device.device, image.version_id));
     } catch (e) {
       setError(String(e));
     }
@@ -59,116 +73,140 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
   const flashEsp = async (variant: FirmwareVariant) => {
     if (!firmware || ports.length === 0) return;
     try {
-      const job = await api.espFlash({
-        port: ports[0].device,
-        version_id: firmware.version_id,
-        variant_id: variant.id,
-      });
-      setJobId(job.id);
+      track(
+        await api.espFlash({
+          port: ports[0].device,
+          version_id: firmware.version_id,
+          variant_id: variant.id,
+        }),
+      );
     } catch (e) {
       setError(String(e));
     }
   };
 
-  const imswitchTag = image?.pair?.imswitch?.tag;
-  const fwServerTag = image?.pair?.firmware_server?.tag;
+  const job = active[0];
 
   return (
-    <div className="production">
-      <button
-        className="btn"
-        style={{ position: "fixed", top: 14, right: 14 }}
+    <Box sx={{ maxWidth: 900, mx: "auto", position: "relative" }}>
+      <IconButton
         onClick={onExit}
-        title="Exit production mode"
+        sx={{ position: "absolute", top: 0, right: 0 }}
+        aria-label="Exit production mode"
       >
-        ⚙
-      </button>
+        <SettingsIcon />
+      </IconButton>
 
-      <h1>openUC2 Production Flasher</h1>
+      <Stack sx={{ mb: 3, alignItems: "center" }}>
+        <Box component="img" src="/logo.png" alt="openUC2" sx={{ height: 64, mb: 1 }} />
+        <Typography variant="h5" sx={{ fontWeight: 800 }}>
+          Production Flasher
+        </Typography>
+      </Stack>
 
-      {error && <div className="error-box">{error}</div>}
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
+      )}
 
-      {jobId ? (
-        <div className="panel" style={{ textAlign: "left" }}>
-          <JobPanel
-            jobId={jobId}
-            onDone={() => {
-              setJobId(null);
-              refresh();
-            }}
-          />
-        </div>
+      {job ? (
+        <JobPanel jobId={job.id} onDone={refresh} />
       ) : (
-        <>
-          <div className="panel">
-            <div className="statusline">SD card image</div>
-            <div className="version-display">{image?.version_id ?? "no image cached"}</div>
-            {(imswitchTag || fwServerTag) && (
-              <div className="hash">
-                {imswitchTag && <>imswitch {imswitchTag}</>}
-                {imswitchTag && fwServerTag && " · "}
-                {fwServerTag && <>fw-server {fwServerTag}</>}
-              </div>
-            )}
-            <div style={{ marginTop: 16 }}>
-              {devices.length === 0 && (
-                <div className="statusline">Insert an SD card to flash.</div>
+        <Stack spacing={2}>
+          <Card variant="outlined">
+            <CardContent>
+              <Typography variant="overline" color="text.secondary">
+                SD card image
+              </Typography>
+              <Typography variant="h5" color="primary" sx={{ wordBreak: "break-all", fontWeight: 800 }}>
+                {image?.version_id ?? "no image cached"}
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: "wrap" }} useFlexGap>
+                {image?.pair?.imswitch && (
+                  <Chip size="small" label={`ImSwitch ${image.pair.imswitch.tag}`} />
+                )}
+                {image?.pair?.firmware_server && (
+                  <Chip size="small" label={`firmware ${image.pair.firmware_server.tag}`} />
+                )}
+              </Stack>
+
+              {devices.length === 0 ? (
+                <Alert severity="info" sx={{ mt: 2 }}>
+                  Insert an SD card to flash.
+                </Alert>
+              ) : (
+                devices.map((d) => (
+                  <Button
+                    key={d.device}
+                    fullWidth
+                    size="large"
+                    variant="contained"
+                    startIcon={<SdCardIcon />}
+                    disabled={!image}
+                    onClick={() => setConfirmSd(d)}
+                    sx={{ mt: 2, minHeight: 72 }}
+                  >
+                    Flash SD card · {fmtBytes(d.size_bytes)} · {d.model || d.device}
+                  </Button>
+                ))
               )}
-              {devices.map((d) => (
-                <button
-                  key={d.device}
-                  className="btn primary big"
-                  style={{ marginTop: 8 }}
-                  disabled={!image}
-                  onClick={() => setConfirmSd(d)}
-                >
-                  Flash SD card ({fmtBytes(d.size_bytes)} · {d.model || d.device})
-                </button>
-              ))}
-            </div>
-          </div>
+            </CardContent>
+          </Card>
 
-          <div className="panel">
-            <div className="statusline">ESP32 firmware</div>
-            <div className="version-display">
-              {(firmware?.tag as string) ?? firmware?.version_id ?? "no firmware cached"}
-            </div>
-            <div className="statusline" style={{ marginTop: 4 }}>
-              {ports.length > 0
-                ? `Board connected on ${ports[0].device}`
-                : "Connect a board via USB to flash."}
-            </div>
-            <div className="cardlist" style={{ marginTop: 16, textAlign: "left" }}>
-              {variants.map((v) => (
-                <div
-                  key={v.id}
-                  className={`card${ports.length === 0 ? " disabled" : ""}`}
-                  onClick={() => flashEsp(v)}
-                >
-                  <div className="title">{v.name}</div>
-                  <div className="sub">{v.chip_family ?? "auto"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
+          <Card variant="outlined">
+            <CardContent>
+              <Typography variant="overline" color="text.secondary">
+                ESP32 firmware
+              </Typography>
+              <Typography variant="h5" color="primary" sx={{ wordBreak: "break-all", fontWeight: 800 }}>
+                {(firmware?.tag as string) ?? firmware?.version_id ?? "no firmware cached"}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                {ports.length > 0
+                  ? `Board connected on ${ports[0].device}`
+                  : "Connect a board via USB to flash."}
+              </Typography>
+
+              <Grid container spacing={1.5} sx={{ mt: 1 }}>
+                {variants.map((v) => (
+                  <Grid key={v.id} size={{ xs: 12, sm: 6 }}>
+                    <Button
+                      fullWidth
+                      variant="outlined"
+                      startIcon={<BoltIcon />}
+                      disabled={ports.length === 0}
+                      onClick={() => flashEsp(v)}
+                      sx={{ minHeight: 64, justifyContent: "flex-start" }}
+                    >
+                      <Box sx={{ textAlign: "left" }}>
+                        <Typography sx={{ fontWeight: 700 }}>{v.name}</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {v.chip_family ?? "auto"}
+                        </Typography>
+                      </Box>
+                    </Button>
+                  </Grid>
+                ))}
+              </Grid>
+            </CardContent>
+          </Card>
+        </Stack>
       )}
 
-      {confirmSd && image && (
-        <ConfirmDialog
-          title="Erase and write SD card?"
-          danger
-          message={
-            <p>
-              ALL DATA on <strong>{confirmSd.device}</strong> ({fmtBytes(confirmSd.size_bytes)})
-              will be replaced with <strong>{image.version_id}</strong>.
-            </p>
-          }
-          confirmLabel="Erase & Flash"
-          onConfirm={() => flashSd(confirmSd)}
-          onCancel={() => setConfirmSd(null)}
-        />
-      )}
-    </div>
+      <ConfirmDialog
+        open={!!confirmSd}
+        title="Erase and write SD card?"
+        danger
+        confirmLabel="Erase & flash"
+        onConfirm={() => confirmSd && flashSd(confirmSd)}
+        onCancel={() => setConfirmSd(null)}
+      >
+        <Typography>
+          All data on <strong>{confirmSd?.device}</strong> ({fmtBytes(confirmSd?.size_bytes)})
+          will be replaced with <strong>{image?.version_id}</strong>.
+        </Typography>
+      </ConfirmDialog>
+    </Box>
   );
 }

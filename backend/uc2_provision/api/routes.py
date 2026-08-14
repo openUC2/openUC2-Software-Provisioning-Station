@@ -20,9 +20,12 @@ from ..espflash import (
     send_serial_command,
 )
 from ..github import GitHubError
+from ..hwtest import TEST_GROUPS, HardwareError
 from ..jobs import JobState, jobs
+from ..oci import OCIError
 from ..sdcard import list_block_devices, write_image
-from ..state import cache, sync
+from ..state import cache, hardware, save_test_params, sync, test_params
+from ..testparams import TestParams
 
 router = APIRouter(prefix="/api")
 
@@ -110,11 +113,43 @@ def download_image(version_id: str) -> dict[str, Any]:
     return job.to_dict(with_log=False)
 
 
+@router.post("/versions/images/{version_id}/download-firmware")
+def download_matching_firmware(version_id: str) -> dict[str, Any]:
+    """Pull the firmware bundle pinned by this image's deployment files."""
+    try:
+        job = sync.download_firmware_for_image(version_id)
+    except (GitHubError, OCIError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return job.to_dict(with_log=False)
+
+
+@router.get("/versions/images/{version_id}/pair")
+def image_pair(version_id: str) -> dict[str, Any]:
+    """The ImSwitch build + firmware bundle this image pins (works before
+    the image itself is downloaded)."""
+    try:
+        return sync.resolve_pair_for_version(version_id)
+    except (GitHubError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/versions/images/{version_id}/firmware")
+def matching_firmware(version_id: str) -> dict[str, Any]:
+    """The firmware bundle that belongs to this image, and its variants."""
+    img = cache.get("images", version_id)
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not cached")
+    match = sync.matched_firmware_for(img.meta)
+    if not match:
+        return {"match": None, "variants": []}
+    return {"match": match, "variants": sync.firmware_variants(match["version_id"])}
+
+
 @router.post("/versions/firmware/{version_id}/download")
 def download_firmware(version_id: str) -> dict[str, Any]:
     try:
         job = sync.download_firmware(version_id)
-    except (GitHubError, RuntimeError) as exc:
+    except (GitHubError, OCIError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return job.to_dict(with_log=False)
 
@@ -246,7 +281,8 @@ class SerialCommand(BaseModel):
 
 @router.post("/esp/serial")
 def esp_serial(cmd: SerialCommand) -> dict[str, Any]:
-    """Send a UC2 JSON command over serial (hardware-test scaffolding)."""
+    """Send a raw UC2 JSON command over serial (escape hatch — the test
+    endpoints below are the supported path)."""
     try:
         response = send_serial_command(
             cmd.port, cmd.payload, baud=cmd.baud, read_seconds=cmd.read_seconds
@@ -254,6 +290,88 @@ def esp_serial(cmd: SerialCommand) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - surface serial errors to UI
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"response": response}
+
+
+# ---------------------------------------------------------------------------
+# Hardware testing (UC2-REST)
+# ---------------------------------------------------------------------------
+
+@router.get("/test/groups")
+def test_groups() -> dict[str, Any]:
+    """Test catalog + which of them the connected board can actually run."""
+    status = hardware.status()
+    caps = set(status.get("capabilities") or [])
+    groups = []
+    for g in TEST_GROUPS:
+        entry = dict(g)
+        entry["available"] = (
+            not g.get("master_only") or "can" in caps
+        ) if status.get("connected") else False
+        groups.append(entry)
+    return {"groups": groups, "connection": status}
+
+
+@router.get("/test/params")
+def get_test_params() -> dict[str, Any]:
+    return {"values": test_params.model_dump(), "schema": test_params.schema_for_ui()}
+
+
+@router.put("/test/params")
+def put_test_params(update: dict[str, Any]) -> dict[str, Any]:
+    """Replace the test parameter document (partial updates per group)."""
+    try:
+        merged = test_params.model_dump()
+        for group, values in update.items():
+            if group in merged and isinstance(merged[group], dict) and isinstance(values, dict):
+                merged[group].update(values)
+            else:
+                merged[group] = values
+        new_params = TestParams.model_validate(merged)
+    except Exception as exc:  # noqa: BLE001 - validation feedback for the UI
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for field in new_params.model_fields:
+        setattr(test_params, field, getattr(new_params, field))
+    save_test_params()
+    return {"values": test_params.model_dump(), "schema": test_params.schema_for_ui()}
+
+
+class ConnectRequest(BaseModel):
+    port: str
+    baud: int | None = None
+
+
+@router.post("/test/connect")
+def test_connect(req: ConnectRequest) -> dict[str, Any]:
+    try:
+        return hardware.connect(req.port, req.baud)
+    except HardwareError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/test/disconnect")
+def test_disconnect() -> dict[str, Any]:
+    return hardware.disconnect()
+
+
+@router.get("/test/status")
+def test_status() -> dict[str, Any]:
+    return hardware.status()
+
+
+class RunTestRequest(BaseModel):
+    group: str
+    action: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/test/run")
+def test_run(req: RunTestRequest) -> dict[str, Any]:
+    try:
+        return hardware.run(req.group, req.action, req.args)
+    except HardwareError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - a failing command is a test result
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

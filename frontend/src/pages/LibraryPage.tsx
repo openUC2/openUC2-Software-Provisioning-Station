@@ -1,52 +1,94 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Alert,
+  Box,
+  Button,
+  Chip,
+  Grid,
+  IconButton,
+  LinearProgress,
+  Stack,
+  Tooltip,
+  Typography,
+} from "@mui/material";
+import DeleteIcon from "@mui/icons-material/Delete";
+import DownloadIcon from "@mui/icons-material/Download";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import CloudSyncIcon from "@mui/icons-material/CloudSync";
+import MemoryIcon from "@mui/icons-material/Memory";
+import InventoryIcon from "@mui/icons-material/Inventory2";
+import {
   api,
-  CachedVersion,
-  FirmwareRelease,
-  ImageArtifact,
-  Status,
   fmtBytes,
+  type CachedVersion,
+  type FirmwareBundle,
+  type ImageArtifact,
+  type Status,
 } from "../api";
-import { JobPanel } from "../components/JobPanel";
-import { ConfirmDialog } from "../components/Modal";
+import { useJobs } from "../JobsContext";
+import { useSelection } from "../SelectionContext";
+import { ConfirmDialog } from "../components/Confirm";
+import { PageHeader, SectionLabel } from "../components/PageHeader";
+import { SelectCard } from "../components/SelectCard";
 
-/** Version library: browse GitHub versions, download, delete, manage disk. */
 export function LibraryPage({ status }: { status: Status | null }) {
+  const { track } = useJobs();
+  const { refresh: refreshSelection } = useSelection();
   const [images, setImages] = useState<ImageArtifact[]>([]);
-  const [firmware, setFirmware] = useState<FirmwareRelease[]>([]);
-  const [cachedImages, setCachedImages] = useState<CachedVersion[]>([]);
-  const [cachedFirmware, setCachedFirmware] = useState<CachedVersion[]>([]);
+  const [bundles, setBundles] = useState<FirmwareBundle[]>([]);
+  const [cached, setCached] = useState<CachedVersion[]>([]);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [jobIds, setJobIds] = useState<string[]>([]);
   const [toDelete, setToDelete] = useState<CachedVersion | null>(null);
   const [error, setError] = useState("");
+  const [pairs, setPairs] = useState<Record<string, string>>({});
 
-  const refresh = useCallback(async (remote: boolean) => {
-    setLoading(remote);
-    try {
-      const [imgs, fw] = await Promise.all([api.images(remote), api.firmware(remote)]);
-      if (remote) {
-        setImages(imgs.available);
-        setFirmware(fw.available);
-        setRemoteError(imgs.error || fw.error);
+  const refresh = useCallback(
+    async (remote: boolean) => {
+      setLoading(remote);
+      try {
+        const [imgs, fw] = await Promise.all([api.images(remote), api.firmware(remote)]);
+        if (remote) {
+          setImages(imgs.available);
+          setRemoteError(imgs.error || fw.error);
+        }
+        setBundles(fw.available);
+        setCached([...imgs.cached, ...fw.cached]);
+      } catch (e) {
+        setRemoteError(String(e));
+      } finally {
+        setLoading(false);
       }
-      setCachedImages(imgs.cached);
-      setCachedFirmware(fw.cached);
-    } catch (e) {
-      setRemoteError(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     refresh(true);
   }, [refresh]);
 
-  const startJob = (p: Promise<{ id: string }>) => {
+  const start = async (p: Promise<{ id: string }>) => {
     setError("");
-    p.then((job) => setJobIds((ids) => [...ids, job.id])).catch((e) => setError(String(e)));
+    try {
+      track((await p) as any);
+      refresh(false);
+      refreshSelection();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  const lookupPair = async (versionId: string) => {
+    try {
+      const res = await api.imagePair(versionId);
+      const parts = [
+        res.pair.imswitch ? `ImSwitch ${res.pair.imswitch.tag}` : null,
+        res.pair.firmware_server ? `firmware ${res.pair.firmware_server.tag}` : null,
+      ].filter(Boolean);
+      setPairs((p) => ({ ...p, [versionId]: parts.join(" · ") || "no pins found" }));
+    } catch (e) {
+      setPairs((p) => ({ ...p, [versionId]: `lookup failed: ${e}` }));
+    }
   };
 
   const doDelete = async () => {
@@ -55,170 +97,213 @@ export function LibraryPage({ status }: { status: Status | null }) {
       await api.deleteVersion(toDelete.category, toDelete.version_id);
       setToDelete(null);
       refresh(false);
+      refreshSelection();
     } catch (e) {
       setError(String(e));
       setToDelete(null);
     }
   };
 
-  const diskFree = status ? fmtBytes(status.disk_free_bytes) : "?";
-  const cacheSize = status ? fmtBytes(status.cache_bytes) : "?";
-
   return (
-    <div>
-      <h1>Library</h1>
-      <p className="subtitle">
-        Cached versions and GitHub releases · cache {cacheSize} · disk free {diskFree}
-      </p>
+    <Box>
+      <PageHeader
+        title="Library"
+        subtitle={
+          status
+            ? `Cache ${fmtBytes(status.cache_bytes)} · disk free ${fmtBytes(status.disk_free_bytes)}`
+            : undefined
+        }
+        action={
+          <Stack direction="row" spacing={1}>
+            <Button
+              startIcon={<RefreshIcon />}
+              onClick={() => refresh(true)}
+              disabled={loading}
+              variant="outlined"
+            >
+              Check GitHub
+            </Button>
+            <Button
+              startIcon={<CloudSyncIcon />}
+              variant="contained"
+              onClick={() => start(api.checkUpdates(true) as any)}
+            >
+              Get latest
+            </Button>
+          </Stack>
+        }
+      />
 
-      {error && <div className="error-box">{error}</div>}
+      {loading && <LinearProgress sx={{ mb: 2 }} />}
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>
+          {error}
+        </Alert>
+      )}
       {remoteError && (
-        <div className="error-box">
+        <Alert severity="warning" sx={{ mb: 2 }}>
           GitHub unreachable: {remoteError} — cached versions still work offline.
-        </div>
+        </Alert>
+      )}
+      {!status?.github_token_set && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          SD images are CI artifacts and need a GitHub token to download — add one in Settings.
+        </Alert>
       )}
 
-      <div className="row" style={{ marginBottom: 16 }}>
-        <button className="btn" disabled={loading} onClick={() => refresh(true)}>
-          {loading ? "Checking…" : "↻ Check GitHub now"}
-        </button>
-        <button
-          className="btn"
-          onClick={() => startJob(api.checkUpdates(true).then(() => ({ id: "" })))}
-        >
-          ⬇ Auto-download latest
-        </button>
-      </div>
-
-      {jobIds.map((id) =>
-        id ? (
-          <div className="panel" key={id}>
-            <JobPanel
-              jobId={id}
-              onDone={() => {
-                setJobIds((ids) => ids.filter((x) => x !== id));
-                refresh(false);
-              }}
+      <SectionLabel>SD card images · {status?.image_source ?? "openUC2/os-rpi"}</SectionLabel>
+      <Grid container spacing={1.5}>
+        {images.map((a) => (
+          <Grid key={a.artifact_id} size={{ xs: 12, sm: 6, md: 4 }}>
+            <SelectCard
+              icon={<MemoryIcon />}
+              title={a.version_id}
+              badges={
+                <>
+                  <Chip
+                    size="small"
+                    label={a.channel}
+                    color={a.channel === "stable" ? "success" : "default"}
+                  />
+                  {a.cached && <Chip size="small" color="info" label="cached" />}
+                </>
+              }
+              lines={[
+                `${fmtBytes(a.size_bytes)} · ${new Date(a.created_at).toLocaleDateString()}`,
+                `expires ${new Date(a.expires_at).toLocaleDateString()}`,
+                pairs[a.version_id],
+              ]}
+              onClick={() => lookupPair(a.version_id)}
             />
-          </div>
-        ) : null,
-      )}
-
-      <h2>SD card images — {status?.image_source ?? "openUC2/os-rpi"}</h2>
-      <div className="panel">
-        {!status?.github_token_set && (
-          <div className="statusline" style={{ marginBottom: 10 }}>
-            ⚠ Downloading images requires a GitHub token (Settings) — os-rpi images are CI
-            artifacts, not public release files.
-          </div>
-        )}
-        <div className="cardlist">
-          {images.map((a) => (
-            <div key={a.artifact_id} className="card" style={{ cursor: "default" }}>
-              <div className="title">
-                {a.version_id}
-                <span className={`badge ${a.channel}`}>{a.channel}</span>
-                {a.cached && <span className="badge cached">cached</span>}
-              </div>
-              <div className="sub">
-                {fmtBytes(a.size_bytes)} · {new Date(a.created_at).toLocaleDateString()}
-              </div>
-              <div className="sub">expires {new Date(a.expires_at).toLocaleDateString()}</div>
+            <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
               {!a.cached && (
-                <button
-                  className="btn"
-                  style={{ marginTop: 8, width: "100%" }}
-                  onClick={() => startJob(api.downloadImage(a.version_id))}
+                <Button
+                  fullWidth
+                  size="small"
+                  startIcon={<DownloadIcon />}
+                  onClick={() => start(api.downloadImage(a.version_id))}
                 >
-                  ⬇ Download
-                </button>
+                  Download
+                </Button>
               )}
-            </div>
-          ))}
-          {images.length === 0 && <div className="statusline">No downloadable images found.</div>}
-        </div>
-      </div>
-
-      <h2>ESP32 firmware — {status?.firmware_source ?? "youseetoo/uc2-esp32"}</h2>
-      <div className="panel">
-        <div className="cardlist">
-          {firmware.map((r) => (
-            <div key={r.version_id} className="card" style={{ cursor: "default" }}>
-              <div className="title">
-                {r.version_id}
-                <span className={`badge ${r.prerelease ? "prerelease" : "stable"}`}>
-                  {r.prerelease ? "pre-release" : "stable"}
-                </span>
-                {r.cached && <span className="badge cached">cached</span>}
-              </div>
-              <div className="sub">
-                {r.asset_count} assets · {new Date(r.published_at).toLocaleDateString()}
-              </div>
-              {!r.cached && (
-                <button
-                  className="btn"
-                  style={{ marginTop: 8, width: "100%" }}
-                  onClick={() => startJob(api.downloadFirmware(r.version_id))}
+              {a.cached && (
+                <Button
+                  fullWidth
+                  size="small"
+                  startIcon={<DownloadIcon />}
+                  onClick={() => start(api.downloadMatchingFirmware(a.version_id))}
                 >
-                  ⬇ Download
-                </button>
+                  Matching firmware
+                </Button>
               )}
-            </div>
-          ))}
-          {firmware.length === 0 && <div className="statusline">No firmware releases found.</div>}
-        </div>
-      </div>
-
-      <h2>On this station</h2>
-      <div className="panel">
-        {[...cachedImages, ...cachedFirmware].length === 0 && (
-          <div className="statusline">Nothing cached yet.</div>
+            </Stack>
+          </Grid>
+        ))}
+        {images.length === 0 && !loading && (
+          <Grid size={12}>
+            <Alert severity="info">No downloadable images found.</Alert>
+          </Grid>
         )}
-        <div className="cardlist">
-          {[...cachedImages, ...cachedFirmware].map((v) => (
-            <div key={`${v.category}-${v.version_id}`} className="card" style={{ cursor: "default" }}>
-              <div className="title">
-                {v.version_id}
-                <span className="badge cached">{v.category === "images" ? "image" : "firmware"}</span>
-                {!v.complete && <span className="badge prerelease">incomplete</span>}
-              </div>
-              <div className="sub">{fmtBytes(v.size_bytes)}</div>
-              {v.pair?.imswitch && (
-                <div className="sub">imswitch: {v.pair.imswitch.tag}</div>
-              )}
-              {v.pair?.firmware_server && (
-                <div className="sub">fw-server: {v.pair.firmware_server.tag}</div>
-              )}
-              {typeof v.head_sha === "string" && v.head_sha && (
-                <div className="sub">commit: {(v.head_sha as string).slice(0, 7)}</div>
-              )}
-              <button
-                className="btn danger"
-                style={{ marginTop: 8, width: "100%" }}
-                onClick={() => setToDelete(v)}
-              >
-                🗑 Delete
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
+      </Grid>
 
-      {toDelete && (
-        <ConfirmDialog
-          title="Delete cached version?"
-          danger
-          message={
-            <p>
-              Remove <strong>{toDelete.version_id}</strong> ({fmtBytes(toDelete.size_bytes)}) from
-              the station cache? You can re-download it later from GitHub.
-            </p>
-          }
-          confirmLabel="Delete"
-          onConfirm={doDelete}
-          onCancel={() => setToDelete(null)}
-        />
-      )}
-    </div>
+      <SectionLabel>ESP32 firmware bundles</SectionLabel>
+      <Grid container spacing={1.5}>
+        {bundles.map((b) => (
+          <Grid key={b.version_id} size={{ xs: 12, sm: 6, md: 4 }}>
+            <SelectCard
+              icon={<InventoryIcon />}
+              title={b.name}
+              badges={
+                <>
+                  <Chip
+                    size="small"
+                    label={b.source_kind === "container" ? "matched" : b.source_kind}
+                    color={b.source_kind === "container" ? "primary" : "default"}
+                  />
+                  {b.cached && <Chip size="small" color="info" label="cached" />}
+                </>
+              }
+              lines={[
+                b.container_ref,
+                b.matches_image ? `matches ${b.matches_image}` : null,
+                b.published_at ? new Date(b.published_at).toLocaleDateString() : null,
+              ]}
+            />
+            {!b.cached && (
+              <Button
+                fullWidth
+                size="small"
+                startIcon={<DownloadIcon />}
+                sx={{ mt: 0.5 }}
+                onClick={() => start(api.downloadFirmware(b.version_id))}
+              >
+                Download
+              </Button>
+            )}
+          </Grid>
+        ))}
+      </Grid>
+
+      <SectionLabel>Stored on this station</SectionLabel>
+      <Grid container spacing={1.5}>
+        {cached.map((v) => (
+          <Grid key={`${v.category}-${v.version_id}`} size={{ xs: 12, sm: 6, md: 4 }}>
+            <Box sx={{ position: "relative" }}>
+              <SelectCard
+                icon={v.category === "images" ? <MemoryIcon /> : <InventoryIcon />}
+                title={(v.tag as string) || v.version_id}
+                badges={
+                  <>
+                    <Chip
+                      size="small"
+                      label={v.category === "images" ? "image" : "firmware"}
+                    />
+                    {!v.complete && <Chip size="small" color="warning" label="incomplete" />}
+                  </>
+                }
+                lines={[
+                  fmtBytes(v.size_bytes),
+                  v.pair?.imswitch ? `ImSwitch ${v.pair.imswitch.tag}` : null,
+                  v.pair?.firmware_server ? `firmware ${v.pair.firmware_server.tag}` : null,
+                  v.container_ref,
+                  typeof v.head_sha === "string" && v.head_sha
+                    ? `commit ${(v.head_sha as string).slice(0, 7)}`
+                    : null,
+                ]}
+              />
+              <Tooltip title="Delete from cache">
+                <IconButton
+                  size="small"
+                  color="error"
+                  sx={{ position: "absolute", top: 4, right: 4 }}
+                  onClick={() => setToDelete(v)}
+                >
+                  <DeleteIcon />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          </Grid>
+        ))}
+        {cached.length === 0 && (
+          <Grid size={12}>
+            <Alert severity="info">Nothing cached yet.</Alert>
+          </Grid>
+        )}
+      </Grid>
+
+      <ConfirmDialog
+        open={!!toDelete}
+        title="Delete cached version?"
+        danger
+        confirmLabel="Delete"
+        onConfirm={doDelete}
+        onCancel={() => setToDelete(null)}
+      >
+        <Typography>
+          Remove <strong>{toDelete?.version_id}</strong> ({fmtBytes(toDelete?.size_bytes)}) from
+          the station cache? It can be downloaded again later.
+        </Typography>
+      </ConfirmDialog>
+    </Box>
   );
 }
