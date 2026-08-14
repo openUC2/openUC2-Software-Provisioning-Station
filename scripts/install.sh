@@ -34,7 +34,7 @@ rsync -a --delete \
 echo "==> Setting up Python backend"
 python3 -m venv "$INSTALL_DIR/backend/.venv"
 "$INSTALL_DIR/backend/.venv/bin/pip" install -q --upgrade pip
-"$INSTALL_DIR/backend/.venv/bin/pip" install -q "$INSTALL_DIR/backend"
+"$INSTALL_DIR/backend/.venv/bin/pip" install -q -e "$INSTALL_DIR/backend"
 
 if [[ ! -d "$INSTALL_DIR/frontend/dist" ]]; then
     echo "==> No frontend/dist found — building frontend (needs nodejs+npm)"
@@ -52,7 +52,22 @@ systemctl enable --now uc2-provision.service
 if [[ $KIOSK -eq 1 ]]; then
     echo "==> Setting up Chromium kiosk for user ${KIOSK_USER}"
     apt-get install -y --no-install-recommends \
-        xserver-xorg x11-xserver-utils xinit openbox chromium-browser unclutter
+        xserver-xorg x11-xserver-utils xinit openbox unclutter
+    # Debian/Raspberry Pi OS renamed the package from chromium-browser to
+    # chromium at some point; install whichever is available.
+    apt-get install -y --no-install-recommends chromium-browser \
+        || apt-get install -y --no-install-recommends chromium
+
+    # The touchscreen panel is mounted rotated 180 degrees in the enclosure;
+    # flip both the video output and the touch coordinates to match.
+    install -m 644 /dev/stdin /etc/X11/xorg.conf.d/95-touchscreen-rotate.conf <<'EOF'
+Section "InputClass"
+    Identifier "touchscreen-rotate"
+    MatchIsTouchscreen "on"
+    Driver "libinput"
+    Option "TransformationMatrix" "-1 0 1 0 -1 1 0 0 1"
+EndSection
+EOF
 
     KIOSK_HOME=$(getent passwd "$KIOSK_USER" | cut -d: -f6)
     mkdir -p "$KIOSK_HOME/.config/openbox"
@@ -61,8 +76,11 @@ if [[ $KIOSK -eq 1 ]]; then
 xset s off
 xset s noblank
 xset -dpms
+# Physical panel is mounted rotated 180 degrees in the enclosure.
+xrandr --output DSI-1 --rotate inverted
 unclutter -idle 3 &
-chromium-browser \
+CHROMIUM=$(command -v chromium-browser || command -v chromium)
+"$CHROMIUM" \
     --kiosk http://localhost:8000 \
     --noerrdialogs \
     --disable-infobars \
