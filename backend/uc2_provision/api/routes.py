@@ -380,27 +380,46 @@ def test_run(req: RunTestRequest) -> dict[str, Any]:
 
 @router.get("/production")
 def production_info() -> dict[str, Any]:
-    """Latest cached stable image + latest cached firmware, for the locked
-    production screen (no dropdowns)."""
-    def newest(category: str, want_stable: bool) -> dict[str, Any] | None:
-        for v in cache.list_versions(category):  # newest first
-            if not v.meta.get("complete"):
-                continue
-            if want_stable and v.meta.get("channel") not in (None, "stable"):
-                continue
-            return v.to_dict()
-        # Fall back to any complete version.
-        for v in cache.list_versions(category):
-            if v.meta.get("complete"):
-                return v.to_dict()
-        return None
+    """What the locked production screen flashes: the newest cached stable
+    image, plus the firmware bundle that image pins (not merely the newest
+    firmware on disk — production must ship a matching pair)."""
+    complete_images = [v for v in cache.list_versions("images") if v.meta.get("complete")]
+    image_v = next(
+        (v for v in complete_images if v.meta.get("channel") in (None, "stable")),
+        next(iter(complete_images), None),
+    )
 
-    image = newest("images", want_stable=True)
-    firmware = newest("firmware", want_stable=False)
+    firmware_v = None
+    if image_v:
+        match = sync.matched_firmware_for(image_v.meta)
+        if match:
+            candidate = cache.get("firmware", match["version_id"])
+            if candidate and candidate.meta.get("complete"):
+                firmware_v = candidate
+    if firmware_v is None:
+        # No image, or its bundle isn't cached — fall back to the newest
+        # bundle that belongs to a microscope (ODMR is a separate product).
+        firmware_v = next(
+            (
+                v
+                for v in cache.list_versions("firmware")
+                if v.meta.get("complete") and v.meta.get("source_kind") != "odmr"
+            ),
+            None,
+        )
+
     return {
-        "image": image,
-        "firmware": firmware,
-        "firmware_variants": sync.firmware_variants(firmware["version_id"]) if firmware else [],
+        "image": image_v.to_dict() if image_v else None,
+        "firmware": firmware_v.to_dict() if firmware_v else None,
+        "firmware_variants": (
+            sync.firmware_variants(firmware_v.version_id) if firmware_v else []
+        ),
+        "paired": bool(
+            image_v
+            and firmware_v
+            and (sync.matched_firmware_for(image_v.meta) or {}).get("version_id")
+            == firmware_v.version_id
+        ),
     }
 
 

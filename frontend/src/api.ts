@@ -260,6 +260,7 @@ export const api = {
       image: CachedVersion | null;
       firmware: CachedVersion | null;
       firmware_variants: FirmwareVariant[];
+      paired: boolean;
     }>("/api/production"),
 
   jobs: () => request<Job[]>("/api/jobs"),

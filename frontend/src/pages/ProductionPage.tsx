@@ -35,6 +35,7 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
   const [devices, setDevices] = useState<BlockDevice[]>([]);
   const [ports, setPorts] = useState<SerialPort[]>([]);
   const [confirmSd, setConfirmSd] = useState<BlockDevice | null>(null);
+  const [paired, setPaired] = useState(true);
   const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
@@ -46,6 +47,7 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
       ]);
       setImage(prod.image);
       setFirmware(prod.firmware);
+      setPaired(prod.paired ?? true);
       setVariants(prod.firmware_variants);
       setDevices(devs.filter((d) => d.writable_target));
       setPorts(prts);
@@ -167,6 +169,13 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
                   ? `Board connected on ${ports[0].device}`
                   : "Connect a board via USB to flash."}
               </Typography>
+
+              {image && firmware && !paired && (
+                <Alert severity="warning" sx={{ mt: 1.5 }}>
+                  This firmware is not the bundle pinned by the cached image — download the
+                  matching one before shipping units.
+                </Alert>
+              )}
 
               <Grid container spacing={1.5} sx={{ mt: 1 }}>
                 {variants.map((v) => (
