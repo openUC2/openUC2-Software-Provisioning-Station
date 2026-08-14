@@ -1,0 +1,34 @@
+[project]
+name = "uc2-provision"
+version = "0.1.0"
+description = "openUC2 Software Provisioning Station - flash Raspberry Pi SD images and ESP32 firmware from a touch kiosk"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "esptool>=4.7",
+    "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+uc2-provision = "uc2_provision.main:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["uc2_provision*"]
+
+[tool.ruff]
+line-length = 100
