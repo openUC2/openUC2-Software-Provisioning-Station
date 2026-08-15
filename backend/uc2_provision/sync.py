@@ -125,6 +125,7 @@ class SyncService:
             files = self.github.download_artifact(
                 artifact["artifact_id"], dest, progress,
                 cancelled=lambda: job.cancel_requested,
+                fallback_name=artifact.get("name"),
             )
             job.set_progress(0.88, "Verifying checksum")
             extra: dict[str, Any] = {"files_sha256": {}}

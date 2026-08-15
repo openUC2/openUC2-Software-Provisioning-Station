@@ -86,6 +86,23 @@ Settings live in `/var/lib/uc2-provision/settings.json` (Linux) or
 | `esp_erase_before_flash` | true | full chip erase before writing |
 | `production_mode` | false | locked one-button UI |
 
+## Update on device
+
+```
+sudo /opt/uc2-provision/backend/.venv/bin/pip install -q -e /home/pi/openUC2-Software-Provisioning-Station/backend/
+```
+
+## Firmware / Software Cache
+
+```
+/var/lib/uc2-provision/cache
+```
+
+## Start/ Stop Service 
+
+```
+service uc2-provision stop
+service uc2-provision start
 ## API
 
 The UI is a thin client over a REST API — everything is scriptable:

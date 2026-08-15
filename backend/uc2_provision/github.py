@@ -179,8 +179,16 @@ class GitHubClient:
         dest_dir: Path,
         progress: ProgressCb,
         cancelled: Callable[[], bool] = lambda: False,
+        fallback_name: str | None = None,
     ) -> list[Path]:
-        """Download an Actions artifact (zip) and extract it into dest_dir.
+        """Download an Actions artifact and extract it into dest_dir.
+
+        The `/zip` endpoint is documented to always return a zip wrapper,
+        but for some single-file artifacts GitHub has been observed to
+        redirect straight to the raw file instead (no zip framing at all).
+        Detect that case and use the downloaded bytes as-is rather than
+        failing the whole download after the multi-GB transfer already
+        completed.
 
         Returns the list of extracted files.  Verifies nothing here — the
         caller compares sha256 against the reported artifact digest.
@@ -193,6 +201,12 @@ class GitHubClient:
         url = f"{API}/repos/{src.owner}/{src.repo}/actions/artifacts/{artifact_id}/zip"
         zip_path = dest_dir / f".artifact-{artifact_id}.zip"
         self._stream_download(url, zip_path, progress, cancelled)
+
+        if not zipfile.is_zipfile(zip_path):
+            target = dest_dir / (fallback_name or f"artifact-{artifact_id}.bin")
+            zip_path.rename(target)
+            return [target]
+
         extracted: list[Path] = []
         with zipfile.ZipFile(zip_path) as zf:
             for info in zf.infolist():
