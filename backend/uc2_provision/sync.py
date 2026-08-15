@@ -89,7 +89,7 @@ class SyncService:
         cached = self.cache.get("firmware", vid)
         return {
             "version_id": vid,
-            "container_ref": fws["image"] + ":" + fws["tag"],
+            "container_ref": fws["image"],  # already "registry/repo:tag"
             "tag": fws["tag"],
             "cached": bool(cached and cached.meta.get("complete")),
             "imswitch_tag": (pair.get("imswitch") or {}).get("tag"),
