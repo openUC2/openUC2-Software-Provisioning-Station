@@ -32,11 +32,13 @@ import WifiTetheringIcon from "@mui/icons-material/WifiTethering";
 import HubIcon from "@mui/icons-material/Hub";
 import DeveloperBoardIcon from "@mui/icons-material/DeveloperBoard";
 import CircleIcon from "@mui/icons-material/Circle";
+import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
 
 import { api, type Status } from "./api";
 import { JobsProvider, useJobs } from "./JobsContext";
 import { SelectionProvider, useSelection } from "./SelectionContext";
 import { ActivityBar } from "./components/ActivityBar";
+import { ConfirmDialog } from "./components/Confirm";
 import { SdFlashPage } from "./pages/SdFlashPage";
 import { EspFlashPage } from "./pages/EspFlashPage";
 import { LibraryPage } from "./pages/LibraryPage";
@@ -53,6 +55,9 @@ interface NavItem {
   label: string;
   icon: JSX.Element;
   group: string;
+  /** "action" items don't switch tabs — they trigger a handler (see Shell). */
+  kind?: "tab" | "action";
+  danger?: boolean;
 }
 
 const NAV: { group: string; label: string; items: NavItem[] }[] = [
@@ -84,7 +89,17 @@ const NAV: { group: string; label: string; items: NavItem[] }[] = [
   {
     group: "system",
     label: "System",
-    items: [{ id: "settings", label: "Settings", icon: <SettingsIcon />, group: "system" }],
+    items: [
+      { id: "settings", label: "Settings", icon: <SettingsIcon />, group: "system" },
+      {
+        id: "shutdown",
+        label: "Shut down",
+        icon: <PowerSettingsNewIcon />,
+        group: "system",
+        kind: "action",
+        danger: true,
+      },
+    ],
   },
 ];
 
@@ -93,6 +108,9 @@ function Shell() {
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 900);
   const [status, setStatus] = useState<Status | null>(null);
   const [backendDown, setBackendDown] = useState(false);
+  const [confirmShutdown, setConfirmShutdown] = useState(false);
+  const [shuttingDown, setShuttingDown] = useState(false);
+  const [shutdownError, setShutdownError] = useState("");
   const { active } = useJobs();
   const { image, matched } = useSelection();
 
@@ -118,6 +136,25 @@ function Shell() {
     setTab("settings");
   };
 
+  const doShutdown = async () => {
+    setConfirmShutdown(false);
+    setShutdownError("");
+    try {
+      await api.shutdown();
+      setShuttingDown(true);
+    } catch (e) {
+      setShutdownError(String(e));
+    }
+  };
+
+  const handleNavClick = (item: NavItem) => {
+    if (item.kind === "action" && item.id === "shutdown") {
+      setConfirmShutdown(true);
+      return;
+    }
+    setTab(item.id);
+  };
+
   const width = collapsed ? DRAWER_NARROW : DRAWER_WIDE;
 
   const content = useMemo(() => {
@@ -135,6 +172,27 @@ function Shell() {
         return null;
     }
   }, [tab, status, refreshStatus]);
+
+  if (shuttingDown) {
+    return (
+      <Box
+        sx={{
+          height: "100%",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 2,
+        }}
+      >
+        <PowerSettingsNewIcon sx={{ fontSize: 64, color: "text.secondary" }} />
+        <Typography variant="h5">Shutting down…</Typography>
+        <Typography variant="body2" color="text.secondary">
+          It is safe to remove power once the screen goes dark.
+        </Typography>
+      </Box>
+    );
+  }
 
   if (status?.production_mode) {
     return (
@@ -200,22 +258,23 @@ function Shell() {
               )}
               <List dense disablePadding>
                 {section.items.map((item) => {
-                  const selected = tab === item.id;
+                  const selected = item.kind !== "action" && tab === item.id;
+                  const accent = item.danger ? "error.main" : groupColors[item.group];
                   const button = (
                     <ListItemButton
                       selected={selected}
-                      onClick={() => setTab(item.id)}
+                      onClick={() => handleNavClick(item)}
                       sx={{
                         mx: 1,
                         borderLeft: 2,
-                        borderColor: selected ? groupColors[item.group] : "transparent",
+                        borderColor: selected ? accent : "transparent",
                         justifyContent: collapsed ? "center" : "flex-start",
                       }}
                     >
                       <ListItemIcon
                         sx={{
                           minWidth: collapsed ? 0 : 40,
-                          color: selected ? groupColors[item.group] : "text.secondary",
+                          color: selected ? accent : item.danger ? "error.main" : "text.secondary",
                         }}
                       >
                         {item.icon}
@@ -224,7 +283,12 @@ function Shell() {
                         <ListItemText
                           primary={item.label}
                           slotProps={{
-                            primary: { sx: { fontWeight: selected ? 700 : 500 } },
+                            primary: {
+                              sx: {
+                                fontWeight: selected ? 700 : 500,
+                                color: item.danger ? "error.main" : undefined,
+                              },
+                            },
                           }}
                         />
                       )}
@@ -310,11 +374,37 @@ function Shell() {
               Backend not reachable — is the uc2-provision service running?
             </Alert>
           )}
+          {shutdownError && (
+            <Alert severity="error" sx={{ mb: 2 }} onClose={() => setShutdownError("")}>
+              {shutdownError}
+            </Alert>
+          )}
           {content}
         </Box>
 
         <ActivityBar />
       </Box>
+
+      <ConfirmDialog
+        open={confirmShutdown}
+        title="Shut down the Raspberry Pi?"
+        danger
+        confirmLabel="Shut down"
+        onConfirm={doShutdown}
+        onCancel={() => setConfirmShutdown(false)}
+      >
+        <Stack spacing={1.5}>
+          {active.length > 0 && (
+            <Alert severity="warning">
+              {active.length} job{active.length > 1 ? "s are" : " is"} still running — shutting
+              down now will interrupt {active.length > 1 ? "them" : "it"}.
+            </Alert>
+          )}
+          <Typography>
+            The station will power off. Make sure nothing is in progress before continuing.
+          </Typography>
+        </Stack>
+      </ConfirmDialog>
     </Box>
   );
 }

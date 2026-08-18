@@ -13,6 +13,7 @@ import {
   InputLabel,
   MenuItem,
   Select,
+  Slider,
   Stack,
   ToggleButton,
   ToggleButtonGroup,
@@ -47,6 +48,7 @@ export function TestPage({ groupId }: { groupId: string }) {
   const [baud, setBaud] = useState(115200);
   const [axis, setAxis] = useState("X");
   const [channel, setChannel] = useState(1);
+  const [sliderValue, setSliderValue] = useState<number | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [output, setOutput] = useState<string>("");
@@ -76,6 +78,10 @@ export function TestPage({ groupId }: { groupId: string }) {
   }, [ports, port]);
 
   const group = useMemo(() => groups.find((g) => g.id === groupId), [groups, groupId]);
+
+  useEffect(() => {
+    if (group?.slider && sliderValue === null) setSliderValue(group.slider.default);
+  }, [group, sliderValue]);
 
   const connect = async () => {
     setError("");
@@ -289,6 +295,27 @@ export function TestPage({ groupId }: { groupId: string }) {
         </>
       )}
 
+      {group.slider && (
+        <>
+          <SectionLabel>{group.slider.label}</SectionLabel>
+          <Card variant="outlined" sx={{ mb: 1, px: 3, py: 1 }}>
+            <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+              <Slider
+                value={sliderValue ?? group.slider.default}
+                min={group.slider.min}
+                max={group.slider.max}
+                onChange={(_, v) => setSliderValue(v as number)}
+                sx={{ flex: 1 }}
+              />
+              <Chip
+                label={sliderValue ?? group.slider.default}
+                sx={{ minWidth: 72, fontWeight: 700, fontFamily: "monospace" }}
+              />
+            </Stack>
+          </Card>
+        </>
+      )}
+
       {/* ---- actions ---- */}
       <SectionLabel>Tests</SectionLabel>
       <Grid container spacing={1.5}>
@@ -296,6 +323,13 @@ export function TestPage({ groupId }: { groupId: string }) {
           const args: Record<string, unknown> = {};
           if (a.per_axis) args.axis = axis;
           if (a.per_channel) args.channel = channel;
+          if (a.uses_value && group.slider) {
+            const v = sliderValue ?? group.slider.default;
+            // The laser API takes a single 0-1023 value; the LED matrix API
+            // takes an RGB triple, so drive it as a grayscale intensity.
+            if (group.id === "led") args.intensity = [v, v, v];
+            else args.value = v;
+          }
           const key = `${a.id}:${JSON.stringify(args)}`;
           const verdict = verdicts[key];
           return (
@@ -318,9 +352,15 @@ export function TestPage({ groupId }: { groupId: string }) {
                 sx={{ minHeight: 72, flexDirection: "column", gap: 0.5 }}
               >
                 {a.name}
-                {(a.per_axis || a.per_channel) && (
+                {(a.per_axis || a.per_channel || a.uses_value) && (
                   <Typography variant="caption" sx={{ opacity: 0.8 }}>
-                    {a.per_axis ? axis : `ch ${channel}`}
+                    {[
+                      a.per_axis ? axis : null,
+                      a.per_channel ? `ch ${channel}` : null,
+                      a.uses_value ? String(args.value ?? (args.intensity as number[])?.[0]) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
                   </Typography>
                 )}
               </Button>

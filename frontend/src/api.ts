@@ -122,8 +122,16 @@ export interface TestAction {
   name: string;
   per_axis?: boolean;
   per_channel?: boolean;
+  uses_value?: boolean;
   confirm?: string;
   danger?: boolean;
+}
+
+export interface TestSlider {
+  min: number;
+  max: number;
+  default: number;
+  label: string;
 }
 
 export interface TestGroup {
@@ -134,6 +142,7 @@ export interface TestGroup {
   actions: TestAction[];
   axes?: string[];
   channels?: number[];
+  slider?: TestSlider;
   master_only?: boolean;
   available: boolean;
 }
@@ -188,6 +197,8 @@ export const api = {
   status: () => request<Status>("/api/status"),
   githubStatus: () =>
     request<{ authenticated: boolean; user?: string; error?: string }>("/api/github/status"),
+  shutdown: () =>
+    request<{ shutting_down: boolean }>("/api/system/shutdown", { method: "POST" }),
   getSettings: () => request<Record<string, unknown>>("/api/settings"),
   putSettings: (patch: Record<string, unknown>) =>
     request<Record<string, unknown>>("/api/settings", {

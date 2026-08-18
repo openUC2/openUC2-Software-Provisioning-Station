@@ -25,6 +25,7 @@ from ..jobs import JobState, jobs
 from ..oci import OCIError
 from ..sdcard import list_block_devices, write_image
 from ..state import cache, hardware, save_test_params, sync, test_params
+from ..system import SystemControlError, shutdown_host
 from ..testparams import TestParams
 
 router = APIRouter(prefix="/api")
@@ -55,6 +56,15 @@ def github_status() -> dict[str, Any]:
         return sync.github.check_auth()
     except Exception as exc:  # noqa: BLE001 - network status is best-effort
         return {"authenticated": False, "error": str(exc)}
+
+
+@router.post("/system/shutdown")
+def system_shutdown() -> dict[str, Any]:
+    try:
+        shutdown_host()
+    except SystemControlError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    return {"shutting_down": True}
 
 
 class SettingsUpdate(BaseModel):
