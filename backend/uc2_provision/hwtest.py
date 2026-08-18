@@ -99,7 +99,7 @@ class HardwareManager:
         baud = baud or params.baud
         with self._lock:
             self.disconnect()
-            client = uc2rest.UC2Client(serialport=port, baudrate=baud, DEBUG=False)
+            client = uc2rest.UC2Client(serialport=port, baudrate=baud, DEBUG=True)
             serial = getattr(client, "serial", None)
             if serial is None or not getattr(serial, "is_connected", False):
                 # UC2Client silently falls back to a mock serial device.
