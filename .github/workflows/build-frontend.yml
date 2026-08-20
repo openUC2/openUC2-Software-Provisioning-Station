@@ -1,0 +1,69 @@
+name: Build frontend bundle
+
+# The station updates itself with `git reset --hard origin/main` and has no
+# node toolchain, so the built frontend has to be *in* the repo. This builds
+# it here and commits the result back, keeping backend and UI in one
+# consistent, pullable bundle.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/build-frontend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Never react to our own commit — that would loop forever.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # A real token so the push re-triggers nothing but is still auditable.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify bundle
+        working-directory: frontend
+        run: |
+          test -f dist/index.html || { echo "::error::dist/index.html missing"; exit 1; }
+          echo "Bundle contents:"
+          find dist -type f | head -50
+          du -sh dist
+
+      - name: Commit bundle
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # dist/ is gitignored for local development; force-add the CI build.
+          git add -f frontend/dist
+          if git diff --cached --quiet; then
+            echo "Bundle unchanged — nothing to commit."
+            exit 0
+          fi
+          git commit -m "Build frontend bundle for ${GITHUB_SHA::7} [skip ci]"
+          # Rebase onto whatever landed while we were building, then push.
+          git pull --rebase origin main
+          git push origin HEAD:main
