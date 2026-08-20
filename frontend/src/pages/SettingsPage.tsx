@@ -19,6 +19,7 @@ import {
 import SaveIcon from "@mui/icons-material/Save";
 import { api } from "../api";
 import { PageHeader, SectionLabel } from "../components/PageHeader";
+import { UpdateCard } from "../components/UpdateCard";
 
 export function SettingsPage({ onChanged }: { onChanged: () => void }) {
   const [form, setForm] = useState<Record<string, any> | null>(null);
@@ -174,6 +175,10 @@ export function SettingsPage({ onChanged }: { onChanged: () => void }) {
           </Stack>
         </CardContent>
       </Card>
+
+      {/* ---- station software update ---- */}
+      <SectionLabel>Station software</SectionLabel>
+      <UpdateCard />
 
       {/* ---- hardware test parameters ---- */}
       {params && schema && (

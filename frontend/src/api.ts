@@ -166,6 +166,59 @@ export interface TestRunResult {
   result: unknown;
 }
 
+export interface SetupSummary {
+  detectors?: string[];
+  cameras?: string[];
+  lasers?: string[];
+  positioners?: string[];
+  led_matrix?: boolean;
+}
+
+export interface ImSwitchSetup {
+  name: string;
+  sha: string;
+  size: number;
+  summary?: SetupSummary;
+  available: boolean;
+  curated: boolean;
+}
+
+export interface ConfigListing {
+  setups: ImSwitchSetup[];
+  synced_at: number | null;
+  source: string | null;
+  total_upstream: number;
+  show_all: boolean;
+  allowlist: string[];
+  archive_name: string;
+}
+
+export interface ConfigPreview {
+  setup: string;
+  archive_name: string;
+  archive_bytes: number;
+  options: Record<string, unknown>;
+  paths: string[];
+}
+
+export interface VersionInfo {
+  repo_root: string;
+  is_git_checkout: boolean;
+  update_supported: boolean;
+  error?: string;
+  commit?: string;
+  commit_full?: string;
+  branch?: string;
+  subject?: string;
+  committed_at?: string;
+  dirty?: boolean;
+  remote_url?: string;
+  ahead?: number;
+  behind?: number | null;
+  remote_commit?: string;
+  remote_subject?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -199,6 +252,24 @@ export const api = {
     request<{ authenticated: boolean; user?: string; error?: string }>("/api/github/status"),
   shutdown: () =>
     request<{ shutting_down: boolean }>("/api/system/shutdown", { method: "POST" }),
+  reboot: () => request<{ rebooting: boolean }>("/api/system/reboot", { method: "POST" }),
+  version: (fetch = false) => request<VersionInfo>(`/api/system/version?fetch=${fetch}`),
+  update: (reboot = false) =>
+    request<Job>("/api/system/update", {
+      method: "POST",
+      body: JSON.stringify({ reboot }),
+    }),
+
+  configs: () => request<ConfigListing>("/api/configs"),
+  syncConfigs: () =>
+    request<{ synced_at: number; count: number }>("/api/configs/sync", { method: "POST" }),
+  configPreview: (name: string) =>
+    request<ConfigPreview>(`/api/configs/${encodeURIComponent(name)}/preview`),
+  applyConfig: (device: string, setup: string) =>
+    request<Job>("/api/configs/apply", {
+      method: "POST",
+      body: JSON.stringify({ device, setup }),
+    }),
   getSettings: () => request<Record<string, unknown>>("/api/settings"),
   putSettings: (patch: Record<string, unknown>) =>
     request<Record<string, unknown>>("/api/settings", {
@@ -251,10 +322,10 @@ export const api = {
     }),
 
   sdDevices: () => request<BlockDevice[]>("/api/sdcard/devices"),
-  sdFlash: (device: string, versionId: string) =>
+  sdFlash: (device: string, versionId: string, setup?: string | null) =>
     request<Job>("/api/sdcard/flash", {
       method: "POST",
-      body: JSON.stringify({ device, version_id: versionId }),
+      body: JSON.stringify({ device, version_id: versionId, setup: setup ?? null }),
     }),
 
   espPorts: () => request<SerialPort[]>("/api/esp/ports"),

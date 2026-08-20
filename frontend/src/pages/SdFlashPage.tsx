@@ -11,6 +11,7 @@ import {
 import SdCardIcon from "@mui/icons-material/SdCard";
 import UsbIcon from "@mui/icons-material/Usb";
 import MemoryIcon from "@mui/icons-material/Memory";
+import ScienceIcon from "@mui/icons-material/Science";
 import { api, fmtBytes, type BlockDevice } from "../api";
 import { useJobs } from "../JobsContext";
 import { useSelection } from "../SelectionContext";
@@ -20,7 +21,7 @@ import { PageHeader, SectionLabel } from "../components/PageHeader";
 import { SelectCard } from "../components/SelectCard";
 
 export function SdFlashPage() {
-  const { images, imageVersion, setImageVersion, image, matched } = useSelection();
+  const { images, imageVersion, setImageVersion, image, matched, setup } = useSelection();
   const { track, findActive } = useJobs();
   const [devices, setDevices] = useState<BlockDevice[]>([]);
   const [device, setDevice] = useState("");
@@ -51,7 +52,7 @@ export function SdFlashPage() {
     setConfirm(false);
     setError("");
     try {
-      track(await api.sdFlash(device, imageVersion!));
+      track(await api.sdFlash(device, imageVersion!, setup));
     } catch (e) {
       setError(String(e));
     }
@@ -130,7 +131,19 @@ export function SdFlashPage() {
         </Alert>
       )}
 
-      <SectionLabel>2 · SD card</SectionLabel>
+      <SectionLabel>2 · ImSwitch configuration</SectionLabel>
+      <Alert severity={setup ? "success" : "info"} icon={<ScienceIcon />}>
+        {setup ? (
+          <>
+            <strong>{setup.replace(/\.json$/, "")}</strong> will be preloaded onto the card and
+            applied on first boot.
+          </>
+        ) : (
+          "No setup preloaded — choose one on the ImSwitch Config page to configure the microscope automatically."
+        )}
+      </Alert>
+
+      <SectionLabel>3 · SD card</SectionLabel>
       {devices.length === 0 ? (
         <Alert severity="info">No removable drives detected — insert an SD card.</Alert>
       ) : (
@@ -189,6 +202,11 @@ export function SdFlashPage() {
             {selectedDevice?.model || "unknown"}, {fmtBytes(selectedDevice?.size_bytes)}) will
             be erased and replaced with <strong>{imageVersion}</strong>.
           </Typography>
+          {setup && (
+            <Typography>
+              ImSwitch setup <strong>{setup.replace(/\.json$/, "")}</strong> will be preloaded.
+            </Typography>
+          )}
           <Typography variant="body2" color="text.secondary">
             This takes several minutes and cannot be undone.
           </Typography>

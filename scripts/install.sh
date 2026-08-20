@@ -27,9 +27,23 @@ apt-get install -y --no-install-recommends \
 
 echo "==> Copying application to ${INSTALL_DIR}"
 mkdir -p "$INSTALL_DIR"
+# .git is deliberately preserved: the station updates itself in place with
+# `git fetch && git reset --hard origin/<branch>` from the Settings page.
 rsync -a --delete \
-    --exclude backend/.venv --exclude frontend/node_modules --exclude .git \
+    --exclude backend/.venv --exclude frontend/node_modules \
     "$REPO_DIR"/ "$INSTALL_DIR"/
+
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+    # Actions commits the built frontend to the branch, so make sure the
+    # station tracks a real upstream branch it can fast-forward onto.
+    branch="$(git -C "$INSTALL_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+    git -C "$INSTALL_DIR" fetch --quiet origin "$branch" 2>/dev/null \
+        && git -C "$INSTALL_DIR" branch --set-upstream-to="origin/$branch" "$branch" >/dev/null 2>&1 \
+        || echo "    (no network / no origin — in-place updates will need one)"
+else
+    echo "    WARNING: installed without a .git directory — the 'Update station'"
+    echo "    button will be unavailable. Install from a git clone to enable it."
+fi
 
 echo "==> Setting up Python backend"
 python3 -m venv "$INSTALL_DIR/backend/.venv"

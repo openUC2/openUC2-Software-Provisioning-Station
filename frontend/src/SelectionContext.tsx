@@ -27,11 +27,15 @@ interface SelectionState {
   unlocked: boolean;
   setUnlocked: (v: boolean) => void;
   images: CachedVersion[];
+  /** ImSwitch setup preloaded onto the card, or null for none. */
+  setup: string | null;
+  setSetup: (v: string | null) => void;
   refresh: () => Promise<void>;
 }
 
 const SelectionContext = createContext<SelectionState | null>(null);
 const STORAGE_KEY = "uc2.selectedImage";
+const SETUP_KEY = "uc2.selectedSetup";
 
 export function SelectionProvider({ children }: { children: ReactNode }) {
   const [imageVersion, setImageVersionRaw] = useState<string | null>(
@@ -39,6 +43,9 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
   );
   const [unlocked, setUnlocked] = useState(false);
   const [images, setImages] = useState<CachedVersion[]>([]);
+  const [setup, setSetupRaw] = useState<string | null>(() =>
+    localStorage.getItem(SETUP_KEY),
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -68,6 +75,12 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
     else localStorage.removeItem(STORAGE_KEY);
   }, []);
 
+  const setSetup = useCallback((v: string | null) => {
+    setSetupRaw(v);
+    if (v) localStorage.setItem(SETUP_KEY, v);
+    else localStorage.removeItem(SETUP_KEY);
+  }, []);
+
   const value = useMemo<SelectionState>(() => {
     const image = images.find((v) => v.version_id === imageVersion) ?? null;
     return {
@@ -78,9 +91,11 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
       unlocked,
       setUnlocked,
       images,
+      setup,
+      setSetup,
       refresh,
     };
-  }, [imageVersion, images, setImageVersion, unlocked, refresh]);
+  }, [imageVersion, images, setImageVersion, unlocked, setup, setSetup, refresh]);
 
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
 }

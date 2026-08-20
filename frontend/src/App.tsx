@@ -33,6 +33,7 @@ import HubIcon from "@mui/icons-material/Hub";
 import DeveloperBoardIcon from "@mui/icons-material/DeveloperBoard";
 import CircleIcon from "@mui/icons-material/Circle";
 import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
+import ScienceIcon from "@mui/icons-material/Science";
 
 import { api, type Status } from "./api";
 import { JobsProvider, useJobs } from "./JobsContext";
@@ -40,6 +41,7 @@ import { SelectionProvider, useSelection } from "./SelectionContext";
 import { ActivityBar } from "./components/ActivityBar";
 import { ConfirmDialog } from "./components/Confirm";
 import { SdFlashPage } from "./pages/SdFlashPage";
+import { ConfigPage } from "./pages/ConfigPage";
 import { EspFlashPage } from "./pages/EspFlashPage";
 import { LibraryPage } from "./pages/LibraryPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -66,6 +68,7 @@ const NAV: { group: string; label: string; items: NavItem[] }[] = [
     label: "Provision",
     items: [
       { id: "sd", label: "SD Card", icon: <SdCardIcon />, group: "provision" },
+      { id: "config", label: "ImSwitch Config", icon: <ScienceIcon />, group: "provision" },
       { id: "esp", label: "ESP32", icon: <BoltIcon />, group: "provision" },
     ],
   },
@@ -112,7 +115,7 @@ function Shell() {
   const [shuttingDown, setShuttingDown] = useState(false);
   const [shutdownError, setShutdownError] = useState("");
   const { active } = useJobs();
-  const { image, matched } = useSelection();
+  const { image, matched, setup } = useSelection();
 
   const refreshStatus = useCallback(() => {
     api
@@ -162,6 +165,8 @@ function Shell() {
     switch (tab) {
       case "sd":
         return <SdFlashPage />;
+      case "config":
+        return <ConfigPage />;
       case "esp":
         return <EspFlashPage status={status} />;
       case "library":
@@ -358,6 +363,15 @@ function Shell() {
                 color={matched.cached ? "primary" : "warning"}
                 variant={matched.cached ? "filled" : "outlined"}
                 label={matched.tag}
+              />
+            )}
+            {setup && (
+              <Chip
+                size="small"
+                icon={<ScienceIcon />}
+                variant="outlined"
+                label={setup.replace(/\.json$/, "")}
+                sx={{ maxWidth: 220 }}
               />
             )}
             {active.length > 0 && (
