@@ -70,6 +70,25 @@ class Settings(BaseSettings):
     # Production mode: locked UI, only latest stable, no dropdowns.
     production_mode: bool = False
 
+    # ImSwitch setup preloading. The upstream repo carries ~54 setup files,
+    # most of them historical, so the dropdown shows this curated subset.
+    # Empty list = show everything.
+    imswitch_setup_allowlist: list[str] = Field(
+        default_factory=lambda: [
+            "FRAME.json",
+            "FRAME2b.json",
+            "FRAME2b_2cam.json",
+            "FRAME3.json",
+            "FRAME4_Ropod.json",
+            "FRAME6.json",
+            "FRAME_AF.json",
+            "HOLGER.json",
+            "example_uc2.json",
+            "example_virtual_microscope.json",
+        ]
+    )
+    imswitch_show_all_setups: bool = False
+
     # ESP32 flashing defaults.
     esp_default_baud: int = 460800
     esp_erase_before_flash: bool = True
@@ -86,6 +105,10 @@ class Settings(BaseSettings):
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
 
+    @property
+    def imswitch_config_dir(self) -> Path:
+        return self.data_dir / "imswitch_configs"
+
     def persistable(self) -> dict[str, Any]:
         """Subset of settings the UI may change and we persist to disk."""
         return {
@@ -95,6 +118,8 @@ class Settings(BaseSettings):
             "production_mode": self.production_mode,
             "esp_default_baud": self.esp_default_baud,
             "esp_erase_before_flash": self.esp_erase_before_flash,
+            "imswitch_setup_allowlist": self.imswitch_setup_allowlist,
+            "imswitch_show_all_setups": self.imswitch_show_all_setups,
         }
 
     def save(self) -> None:

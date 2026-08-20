@@ -21,12 +21,21 @@ from ..espflash import (
 )
 from ..github import GitHubError
 from ..hwtest import TEST_GROUPS, HardwareError
+from ..imswitchconfig import ARCHIVE_NAME, ConfigError, build_options
 from ..jobs import JobState, jobs
 from ..oci import OCIError
-from ..sdcard import list_block_devices, write_image
-from ..state import cache, hardware, save_test_params, sync, test_params
-from ..system import SystemControlError, shutdown_host
+from ..sdcard import list_block_devices, write_boot_files, write_image
+from ..state import (
+    cache,
+    hardware,
+    imswitch_configs,
+    save_test_params,
+    sync,
+    test_params,
+)
+from ..system import SystemControlError, reboot_host, shutdown_host
 from ..testparams import TestParams
+from ..updater import UpdateError, repo_status, update
 
 router = APIRouter(prefix="/api")
 
@@ -67,6 +76,133 @@ def system_shutdown() -> dict[str, Any]:
     return {"shutting_down": True}
 
 
+@router.post("/system/reboot")
+def system_reboot() -> dict[str, Any]:
+    try:
+        reboot_host()
+    except SystemControlError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    return {"rebooting": True}
+
+
+# ---------------------------------------------------------------------------
+# Self-update
+# ---------------------------------------------------------------------------
+
+@router.get("/system/version")
+def system_version(fetch: bool = False) -> dict[str, Any]:
+    """Installed commit and, with fetch=true, how far behind origin it is."""
+    return repo_status(fetch=fetch)
+
+
+class UpdateRequest(BaseModel):
+    reboot: bool = False
+
+
+@router.post("/system/update")
+def system_update(req: UpdateRequest) -> dict[str, Any]:
+    """Pull the latest commit and restart (or reboot) the station."""
+    status_info = repo_status()
+    if not status_info.get("update_supported"):
+        raise HTTPException(
+            status_code=501,
+            detail=status_info.get("error", "In-place update is not available."),
+        )
+
+    def work(job) -> None:  # noqa: ANN001
+        update(job, restart=not req.reboot, reboot=req.reboot)
+
+    try:
+        job = jobs.submit(
+            "update", "Update station software", work, exclusive="update"
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.to_dict(with_log=False)
+
+
+# ---------------------------------------------------------------------------
+# ImSwitch configuration presets
+# ---------------------------------------------------------------------------
+
+@router.get("/configs")
+def list_configs() -> dict[str, Any]:
+    index = imswitch_configs.index()
+    setups = imswitch_configs.list_setups(
+        settings.imswitch_setup_allowlist, settings.imswitch_show_all_setups
+    )
+    return {
+        "setups": setups,
+        "synced_at": index.get("synced_at"),
+        "source": index.get("source"),
+        "total_upstream": len(index.get("setups", [])),
+        "show_all": settings.imswitch_show_all_setups,
+        "allowlist": settings.imswitch_setup_allowlist,
+        "archive_name": ARCHIVE_NAME,
+    }
+
+
+@router.post("/configs/sync")
+def sync_configs() -> dict[str, Any]:
+    try:
+        index = imswitch_configs.sync()
+    except ConfigError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - network failures reach the UI
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"synced_at": index["synced_at"], "count": len(index["setups"])}
+
+
+@router.get("/configs/{name}/preview")
+def preview_config(name: str) -> dict[str, Any]:
+    """What would be written for this setup, without touching a card."""
+    try:
+        archive = imswitch_configs.build_archive(name)
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "setup": name,
+        "archive_name": ARCHIVE_NAME,
+        "archive_bytes": len(archive),
+        "options": build_options(name),
+        "paths": [
+            "home/pi/ImSwitchConfig/config/imcontrol_options.json",
+            f"home/pi/ImSwitchConfig/imcontrol_setups/{name}",
+        ],
+    }
+
+
+class ApplyConfigRequest(BaseModel):
+    device: str
+    setup: str
+
+
+@router.post("/configs/apply")
+def apply_config(req: ApplyConfigRequest) -> dict[str, Any]:
+    """Write the init-root archive onto an already-flashed card."""
+    try:
+        archive = imswitch_configs.build_archive(req.setup)
+    except ConfigError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    def work(job) -> None:  # noqa: ANN001
+        job.set_progress(0.2, "Mounting boot partition")
+        write_boot_files(job, req.device, {ARCHIVE_NAME: archive})
+        job.set_progress(1.0, "Config written")
+
+    try:
+        job = jobs.submit(
+            "apply-config",
+            f"Preload {req.setup} → {req.device}",
+            work,
+            meta={"device": req.device, "setup": req.setup},
+            exclusive=f"sdcard:{req.device}",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return job.to_dict(with_log=False)
+
+
 class SettingsUpdate(BaseModel):
     github_token: str | None = None
     keep_versions: int | None = Field(default=None, ge=1, le=20)
@@ -74,6 +210,8 @@ class SettingsUpdate(BaseModel):
     production_mode: bool | None = None
     esp_default_baud: int | None = None
     esp_erase_before_flash: bool | None = None
+    imswitch_setup_allowlist: list[str] | None = None
+    imswitch_show_all_setups: bool | None = None
 
 
 @router.get("/settings")
@@ -191,6 +329,8 @@ def sdcard_devices() -> list[dict[str, Any]]:
 class SdFlashRequest(BaseModel):
     device: str
     version_id: str
+    # Optional ImSwitch setup to preload via an init-root boot archive.
+    setup: str | None = None
 
 
 @router.post("/sdcard/flash")
@@ -203,15 +343,27 @@ def sdcard_flash(req: SdFlashRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="No .img/.img.xz file in cached version")
     image_path = images[0]
 
+    boot_files: dict[str, bytes] | None = None
+    if req.setup:
+        # Built up front so a bad/unsynced setup fails before the card is wiped.
+        try:
+            boot_files = {ARCHIVE_NAME: imswitch_configs.build_archive(req.setup)}
+        except ConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     def work(job) -> None:  # noqa: ANN001
-        write_image(job, image_path, req.device)
+        write_image(job, image_path, req.device, boot_files=boot_files)
 
     try:
         job = jobs.submit(
             "flash-sdcard",
             f"Write {image_path.name} → {req.device}",
             work,
-            meta={"device": req.device, "version_id": version.version_id},
+            meta={
+                "device": req.device,
+                "version_id": version.version_id,
+                "setup": req.setup,
+            },
             exclusive=f"sdcard:{req.device}",
         )
     except RuntimeError as exc:

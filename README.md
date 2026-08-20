@@ -22,6 +22,12 @@ WebSerial, no internet dependency once versions are cached.
   laser channels, LED matrix, galvo sweeps, CAN bus scan — driven through
   [UC2-REST](https://github.com/openUC2/UC2-REST), with a technician
   pass/fail prompt per check
+- **Preloads an ImSwitch configuration**: pick a setup from
+  [openUC2/ImSwitchConfig](https://github.com/openUC2/ImSwitchConfig) and the
+  station writes an `init-root-*.tar.gz` into the card's boot partition, which
+  os-rpi unpacks into `/home/pi/ImSwitchConfig` on first boot
+- **Updates itself**: pulls the latest commit (frontend bundle included, built
+  by CI) and restarts or reboots — no keyboard needed
 - **Version library** with disk management: keep N versions, delete old
   ones, all cached locally for offline flashing
 - **Production mode**: locked one-button screen — flashes the latest
@@ -128,7 +134,21 @@ GET  /api/test/groups                test catalog + what the board supports
 POST /api/test/connect               {port, baud} — opens a UC2-REST session
 POST /api/test/run                   {group, action, args}
 GET  /api/test/params                editable test parameters (+ PUT)
+
+GET  /api/configs                    ImSwitch setups (curated) + sync state
+POST /api/configs/sync               mirror setups from ImSwitchConfig
+GET  /api/configs/<name>/preview     what the init-root archive will contain
+POST /api/configs/apply              {device, setup} — write to a flashed card
+
+GET  /api/system/version             installed commit (+ ?fetch=true)
+POST /api/system/update              {reboot} — pull latest and restart
+POST /api/system/shutdown            power off the station
+POST /api/system/reboot              reboot the station
 ```
+
+> `frontend/dist` is built by CI and committed to `main` so the station can
+> update with a single `git reset --hard`. Local builds of `dist/` will show
+> up as modified — don't commit them by hand; let the workflow do it.
 
 ## Roadmap
 

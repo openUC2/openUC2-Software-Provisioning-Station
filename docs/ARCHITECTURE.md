@@ -207,13 +207,80 @@ sequenceDiagram
 | `espflash.py` | serial port listing, esptool erase/write subprocess |
 | `hwtest.py` | UC2-REST connection + test actions, CAN master awareness |
 | `testparams.py` | editable hardware-test parameter document |
+| `imswitchconfig.py` | ImSwitch setup mirror + init-root archive builder |
+| `updater.py` | git-based self-update and restart |
+| `system.py` | host power control (shutdown / reboot) |
 | `jobs.py` | threaded job engine with progress/log/cancel |
 | `api/routes.py` | REST + WebSocket surface for the UI |
+
+### Updating the station itself
+
+The station is installed as a git checkout at `/opt/uc2-provision`, so
+"Update station" is `git fetch` + `git reset --hard origin/<branch>`
+followed by a service restart (or full reboot).
+
+A Pi has no node toolchain and building Vite bundles on one is slow, so the
+frontend is **built in CI and committed**: `.github/workflows/build-frontend.yml`
+builds `frontend/dist` on every push to `main` and commits it back with
+`[skip ci]`. One pull therefore delivers backend and UI as a single
+consistent bundle — which is why `dist/` is force-added in CI despite being
+gitignored for local development.
+
+```mermaid
+flowchart LR
+    push["push to main"] --> ci["Actions: npm ci && npm run build"]
+    ci --> commit["commit frontend/dist [skip ci]"]
+    commit --> main["origin/main"]
+    main -->|"Update station button"| pi["git reset --hard<br/>pip install -e backend<br/>systemctl restart"]
+```
 
 Frontend state is deliberately kept out of the pages:
 `JobsContext` polls `/api/jobs` station-wide (so a download survives
 navigation and any page can re-attach to it), and `SelectionContext` holds
 the selected SD image, which is what enforces the firmware pairing.
+
+## 5b. Preloading an ImSwitch configuration
+
+os-rpi ships a first-boot hook: any archive matching
+`/boot/firmware/init-root-*.tar.gz` is extracted onto `/` with ownership
+preserved, then deleted
+(`deployments/provisioning/boot-init-root.pkg`). The station uses that to
+configure a microscope before it ever boots.
+
+```mermaid
+flowchart LR
+    repo["openUC2/ImSwitchConfig@master<br/>imcontrol_setups/*.json"]
+    store[("Local mirror<br/>data_dir/imswitch_configs")]
+    pick["Technician picks a setup"]
+    tgz["init-root-imswitch-config.tar.gz<br/>uid/gid 1000"]
+    boot["Boot partition root<br/>(FAT, partition 1)"]
+    pi["/home/pi/ImSwitchConfig/…<br/>extracted on first boot"]
+    repo -->|sync| store --> pick --> tgz --> boot -->|"boot-init-root-from-archives"| pi
+```
+
+The archive carries exactly two files, mirroring the reference
+`init-root-example.tar.gz`:
+
+```
+home/pi/ImSwitchConfig/config/imcontrol_options.json
+home/pi/ImSwitchConfig/imcontrol_setups/<setup>.json
+```
+
+`imcontrol_options.json` is generated, not copied — the copy committed
+upstream points at a developer laptop (`/Users/bene/…`), so the station
+writes the real on-device path instead:
+
+```json
+{ "setupFileName": "/home/pi/ImSwitchConfig/imcontrol_setups/FRAME2b.json", … }
+```
+
+Ownership matters: the extractor runs as root and restores the uid/gid
+recorded in the archive, so every entry is written as **1000:1000** (`pi`),
+mode `0644` for files and `0755` for directories.
+
+Upstream carries ~54 setup files, most of them historical, so the dropdown
+shows a curated subset (`imswitch_setup_allowlist` in Settings) with a "show
+all" switch.
 
 ## 6. Hardware testing
 

@@ -5,12 +5,16 @@ from __future__ import annotations
 from .cache import ArtifactCache
 from .config import settings
 from .hwtest import HardwareManager
+from .imswitchconfig import ImSwitchConfigStore
 from .jobs import jobs
 from .sync import SyncService
 from .testparams import TestParams
 
 cache = ArtifactCache(settings.cache_dir)
 sync = SyncService(settings, cache, jobs)
+imswitch_configs = ImSwitchConfigStore(
+    settings.imswitch_config_dir, token_provider=lambda: settings.github_token
+)
 
 test_params_file = settings.data_dir / "test_params.json"
 test_params = TestParams.load(test_params_file)

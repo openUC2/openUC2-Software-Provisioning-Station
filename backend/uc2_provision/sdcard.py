@@ -207,8 +207,18 @@ def _validate_target(device: str) -> BlockDevice:
     raise RuntimeError(f"{device} not found or not a removable disk")
 
 
-def write_image(job: Job, image_path: Path, device: str) -> None:
-    """Stream-decompress image_path (.img.xz or plain .img) onto `device`."""
+def write_image(
+    job: Job,
+    image_path: Path,
+    device: str,
+    boot_files: dict[str, bytes] | None = None,
+) -> None:
+    """Stream-decompress image_path (.img.xz or plain .img) onto `device`.
+
+    `boot_files` are written into the root of the card's boot partition after
+    the image lands — that is how an ImSwitch config is preloaded, via an
+    `init-root-*.tar.gz` archive that os-rpi extracts on first boot.
+    """
     if not image_path.exists():
         raise FileNotFoundError(f"Image missing: {image_path}")
     target = _validate_target(device)
@@ -262,13 +272,105 @@ def write_image(job: Job, image_path: Path, device: str) -> None:
             stream.close()
         counting.close()
 
+    subprocess.run(["sync"], capture_output=True)
+    if platform.system() != "Darwin":
+        # Re-read the partition table so the new boot partition shows up.
+        subprocess.run(["partprobe", device], capture_output=True)
+
+    if boot_files:
+        job.set_progress(0.97, "Writing boot partition files")
+        write_boot_files(job, device, boot_files)
+
     if platform.system() == "Darwin":
         subprocess.run(["diskutil", "eject", device], capture_output=True)
         job.log_line("Ejected — safe to remove the card.")
     else:
         subprocess.run(["sync"], capture_output=True)
-        # Re-read the partition table so a subsequent detect shows the new layout.
-        subprocess.run(["partprobe", device], capture_output=True)
         job.log_line("Sync complete — safe to remove the card.")
     elapsed = time.time() - started
     job.set_progress(1.0, f"Done in {elapsed / 60:.1f} min")
+
+
+# ---------------------------------------------------------------------------
+# Boot partition access (for init-root config archives)
+# ---------------------------------------------------------------------------
+
+def boot_partition(device: str, system: str | None = None) -> str:
+    """First partition of a whole-disk device node.
+
+    mmcblk/nvme/loop devices insert a `p` before the partition number;
+    plain sd* devices do not. macOS uses a separate `sN` scheme.
+    """
+    system = system or platform.system()
+    name = Path(device).name
+    if system == "Darwin":
+        return f"{device}s1"
+    if any(name.startswith(prefix) for prefix in ("mmcblk", "nvme", "loop")):
+        return f"{device}p1"
+    return f"{device}1"
+
+
+def _wait_for_partition(part: str, timeout: float = 15.0) -> None:
+    end = time.time() + timeout
+    while time.time() < end:
+        if Path(part).exists():
+            return
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"Boot partition {part} did not appear — the image may not have a "
+        "partition table, or the card needs to be re-inserted."
+    )
+
+
+def write_boot_files(job: Job, device: str, files: dict[str, bytes]) -> None:
+    """Mount the card's boot (FAT) partition and drop files into its root."""
+    system = platform.system()
+    part = boot_partition(device, system)
+
+    if system == "Darwin":
+        subprocess.run(["diskutil", "mount", part], capture_output=True, text=True)
+        mount_point = _macos_mount_point(part)
+        if not mount_point:
+            raise RuntimeError(f"Could not mount boot partition {part}")
+        try:
+            _copy_into(job, Path(mount_point), files)
+        finally:
+            subprocess.run(["diskutil", "unmount", part], capture_output=True)
+        return
+
+    _wait_for_partition(part)
+    mount_point = Path("/run/uc2-provision-boot")
+    mount_point.mkdir(parents=True, exist_ok=True)
+    # Already-mounted (e.g. by an automounter) partitions must be freed first.
+    subprocess.run(["umount", part], capture_output=True)
+    result = subprocess.run(
+        ["mount", "-t", "vfat", part, str(mount_point)], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Could not mount {part}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    try:
+        _copy_into(job, mount_point, files)
+    finally:
+        subprocess.run(["sync"], capture_output=True)
+        subprocess.run(["umount", str(mount_point)], capture_output=True)
+
+
+def _macos_mount_point(part: str) -> str | None:
+    try:
+        info = plistlib.loads(
+            subprocess.run(
+                ["diskutil", "info", "-plist", part], capture_output=True, check=True
+            ).stdout
+        )
+    except (subprocess.CalledProcessError, plistlib.InvalidFileException):
+        return None
+    return info.get("MountPoint") or None
+
+
+def _copy_into(job: Job, mount_point: Path, files: dict[str, bytes]) -> None:
+    for name, data in files.items():
+        target = mount_point / Path(name).name  # never escape the partition root
+        target.write_bytes(data)
+        job.log_line(f"Wrote {target.name} ({len(data) / 1024:.1f} kB) to the boot partition.")
