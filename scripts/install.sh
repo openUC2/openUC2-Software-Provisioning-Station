@@ -49,6 +49,24 @@ echo "==> Setting up Python backend"
 python3 -m venv "$INSTALL_DIR/backend/.venv"
 "$INSTALL_DIR/backend/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/backend/.venv/bin/pip" install -q -e "$INSTALL_DIR/backend"
+# pip treats "same name+version already installed" as satisfied and won't
+# re-point an existing editable install, even to a different source path. If
+# this venv was ever pip-installed against another checkout (e.g. a dev
+# clone), the line above silently no-ops and the service keeps serving from
+# the wrong path. Force it so the editable link always matches INSTALL_DIR.
+"$INSTALL_DIR/backend/.venv/bin/pip" install -q --force-reinstall --no-deps \
+    -e "$INSTALL_DIR/backend"
+
+editable_src="$("$INSTALL_DIR/backend/.venv/bin/python3" -c \
+    "import uc2_provision, os; print(os.path.dirname(uc2_provision.__file__))")"
+case "$editable_src" in
+    "$INSTALL_DIR"/*) ;;
+    *)
+        echo "ERROR: backend venv is editable-installed from ${editable_src}," >&2
+        echo "       not ${INSTALL_DIR}. The service would serve stale code/frontend." >&2
+        exit 1
+        ;;
+esac
 
 if [[ ! -d "$INSTALL_DIR/frontend/dist" ]]; then
     echo "==> No frontend/dist found — building frontend (needs nodejs+npm)"

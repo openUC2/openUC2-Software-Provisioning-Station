@@ -173,6 +173,19 @@ def _install_backend(job: Job) -> None:
     )
     if result.returncode != 0:
         raise UpdateError(f"pip install failed: {result.stderr.strip()[:500]}")
+
+    # pip treats "same name+version already installed" as satisfied and skips
+    # re-pointing an existing editable install, even to a different source
+    # path — so the call above is a no-op if this venv was ever pointed at a
+    # different checkout. Force the editable link back onto REPO_ROOT so a
+    # stale pointer can't silently keep serving old code/frontend forever.
+    result = subprocess.run(
+        [str(pip), "install", "-q", "--force-reinstall", "--no-deps", "-e", str(REPO_ROOT / "backend")],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise UpdateError(f"pip install --force-reinstall failed: {result.stderr.strip()[:500]}")
     job.log_line("Python dependencies up to date.")
 
 

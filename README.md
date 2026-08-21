@@ -109,6 +109,10 @@ sudo /opt/uc2-provision/backend/.venv/bin/pip install -q -e /home/pi/openUC2-Sof
 ```
 service uc2-provision stop
 service uc2-provision start
+
+sudo /opt/uc2-provision/backend/.venv/bin/python /opt/uc2-provision/backend/uc2_provision/main.py
+```
+
 ## API
 
 The UI is a thin client over a REST API — everything is scriptable:
