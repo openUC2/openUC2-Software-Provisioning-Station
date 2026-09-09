@@ -109,8 +109,9 @@ sudo /opt/uc2-provision/backend/.venv/bin/pip install -q -e /home/pi/openUC2-Sof
 ```
 service uc2-provision stop
 service uc2-provision start
+service uc2-provision status
 
-sudo /opt/uc2-provision/backend/.venv/bin/python /opt/uc2-provision/backend/uc2_provision/main.py
+/opt/uc2-provision/backend/.venv/bin/python3 /opt/uc2-provision/backend/.venv/bin/uc2-provision
 ```
 
 ## API

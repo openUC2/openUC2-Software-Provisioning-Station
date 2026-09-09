@@ -23,10 +23,15 @@ import { isActive } from "../api";
 export function JobPanel({
   jobId,
   onDone,
+  onDismiss,
   compact,
 }: {
   jobId: string;
   onDone?: () => void;
+  /** Shown once the job reaches a terminal state, so failures stay on
+   * screen (with their error and log) until the technician acknowledges
+   * them, instead of silently reverting to the start button. */
+  onDismiss?: () => void;
   compact?: boolean;
 }) {
   const { byId, cancel } = useJobs();
@@ -88,6 +93,11 @@ export function JobPanel({
           {running && (
             <Button color="error" variant="outlined" onClick={() => cancel(job.id)}>
               Cancel
+            </Button>
+          )}
+          {!running && onDismiss && (
+            <Button variant="outlined" onClick={onDismiss}>
+              Dismiss
             </Button>
           )}
         </Stack>

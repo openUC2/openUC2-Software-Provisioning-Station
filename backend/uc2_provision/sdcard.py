@@ -11,6 +11,7 @@ Supports Linux (the actual station) and macOS (development).
 
 from __future__ import annotations
 
+import errno
 import json
 import lzma
 import os
@@ -196,6 +197,50 @@ def _unmount_all(device: str, job: Job) -> None:
         walk(d)
 
 
+def _device_gone(device: str) -> bool:
+    """True if the block device vanished or shrank to zero.
+
+    That is what a card reader which fell off the USB bus looks like from
+    userspace: the kernel keeps the node around briefly but sets its capacity
+    to 0 ("detected capacity change from N to 0"), so queued writes land past
+    the end of a zero-length device.
+    """
+    if platform.system() == "Darwin":
+        return not Path(device).exists()
+    try:
+        size = int(Path(f"/sys/class/block/{Path(device).name}/size").read_text().strip())
+    except (OSError, ValueError):
+        return not Path(device).exists()
+    return size == 0
+
+
+def _write_failure(
+    exc: OSError, device: str, written: int, target: BlockDevice
+) -> RuntimeError:
+    """Turn a raw-device write error into something a technician can act on.
+
+    A reader that drops off the bus mid-write makes further writes fail with
+    ENOSPC, whose stock message ("No space left on device") reads as a full
+    disk and sends people to `df` — the card and the station's own storage are
+    both fine, the hardware just disappeared.
+    """
+    gb = written / 1e9
+    if _device_gone(device):
+        return RuntimeError(
+            f"{device} disappeared after {gb:.2f} GB — the card reader dropped off "
+            "the USB bus mid-write. This is a hardware fault (failing reader, "
+            "cable or card contacts), not a full disk. Re-seat the reader and card, "
+            "or use a different reader / a powered USB hub. Check `dmesg` for "
+            "'USB disconnect' to confirm."
+        )
+    if exc.errno == errno.ENOSPC:
+        return RuntimeError(
+            f"{device} ran out of space after {gb:.2f} GB — the image does not fit "
+            f"on this card ({target.size_bytes / 1e9:.1f} GB). Use a larger card."
+        )
+    return RuntimeError(f"Write to {device} failed after {gb:.2f} GB: {exc}")
+
+
 def _validate_target(device: str) -> BlockDevice:
     for dev in list_block_devices():
         if dev.device == device:
@@ -249,9 +294,12 @@ def write_image(
             if not chunk:
                 break
             view = memoryview(chunk)
-            while view:
-                n = os.write(fd, view)
-                view = view[n:]
+            try:
+                while view:
+                    n = os.write(fd, view)
+                    view = view[n:]
+            except OSError as exc:
+                raise _write_failure(exc, device, written, target) from exc
             written += len(chunk)
             frac = counting.bytes_read / total_compressed if total_compressed else 0
             # Reserve the last 5% for fsync, which can take a while.
@@ -265,7 +313,12 @@ def write_image(
                 last_report = now
         job.set_progress(0.95, "Flushing buffers (this can take a minute)")
         job.log_line(f"Wrote {written / 1e9:.2f} GB, syncing ...")
-        os.fsync(fd)
+        # Most bytes are still only in the page cache at this point, so a reader
+        # that died mid-write usually surfaces the error here rather than above.
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            raise _write_failure(exc, device, written, target) from exc
     finally:
         os.close(fd)
         if is_xz:

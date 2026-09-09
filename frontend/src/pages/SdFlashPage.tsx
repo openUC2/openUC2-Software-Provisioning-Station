@@ -13,7 +13,7 @@ import UsbIcon from "@mui/icons-material/Usb";
 import MemoryIcon from "@mui/icons-material/Memory";
 import ScienceIcon from "@mui/icons-material/Science";
 import { api, fmtBytes, type BlockDevice } from "../api";
-import { useJobs } from "../JobsContext";
+import { useJobSlot, useJobs } from "../JobsContext";
 import { useSelection } from "../SelectionContext";
 import { JobPanel } from "../components/JobPanel";
 import { ConfirmDialog } from "../components/Confirm";
@@ -22,15 +22,16 @@ import { SelectCard } from "../components/SelectCard";
 
 export function SdFlashPage() {
   const { images, imageVersion, setImageVersion, image, matched, setup } = useSelection();
-  const { track, findActive } = useJobs();
+  const { track } = useJobs();
   const [devices, setDevices] = useState<BlockDevice[]>([]);
   const [device, setDevice] = useState("");
   const [confirm, setConfirm] = useState(false);
   const [error, setError] = useState("");
 
-  // Re-attach to a write that is already running (e.g. started, then the
-  // technician switched pages and came back).
-  const runningJob = findActive("flash-sdcard");
+  // Re-attach to a write already running or just finished, wherever it was
+  // started from, and keep it on screen through its terminal state — a failed
+  // job would otherwise vanish the instant it fails.
+  const { jobId, adopt, dismiss } = useJobSlot("flash-sdcard");
 
   const refresh = useCallback(async () => {
     try {
@@ -52,7 +53,9 @@ export function SdFlashPage() {
     setConfirm(false);
     setError("");
     try {
-      track(await api.sdFlash(device, imageVersion!, setup));
+      const job = await api.sdFlash(device, imageVersion!, setup);
+      track(job);
+      adopt(job.id);
     } catch (e) {
       setError(String(e));
     }
@@ -172,8 +175,8 @@ export function SdFlashPage() {
       )}
 
       <Box sx={{ mt: 3 }}>
-        {runningJob ? (
-          <JobPanel jobId={runningJob.id} onDone={refresh} />
+        {jobId ? (
+          <JobPanel jobId={jobId} onDone={refresh} onDismiss={dismiss} />
         ) : (
           <Button
             variant="contained"

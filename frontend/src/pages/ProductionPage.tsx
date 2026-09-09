@@ -22,13 +22,13 @@ import {
   type FirmwareVariant,
   type SerialPort,
 } from "../api";
-import { useJobs } from "../JobsContext";
+import { useJobSlot, useJobs } from "../JobsContext";
 import { JobPanel } from "../components/JobPanel";
 import { ConfirmDialog } from "../components/Confirm";
 
 /** Locked assembly-line screen: latest cached versions, one button each. */
 export function ProductionPage({ onExit }: { onExit: () => void }) {
-  const { track, active } = useJobs();
+  const { track } = useJobs();
   const [image, setImage] = useState<CachedVersion | null>(null);
   const [firmware, setFirmware] = useState<CachedVersion | null>(null);
   const [variants, setVariants] = useState<FirmwareVariant[]>([]);
@@ -37,6 +37,9 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
   const [confirmSd, setConfirmSd] = useState<BlockDevice | null>(null);
   const [paired, setPaired] = useState(true);
   const [error, setError] = useState("");
+  // Keep a flash on screen through its terminal state — on the assembly line
+  // a failure that silently reverts to the button row ships a broken card.
+  const { jobId, adopt, dismiss } = useJobSlot(["flash-sdcard", "flash-esp"]);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,7 +69,9 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
     setConfirmSd(null);
     if (!image) return;
     try {
-      track(await api.sdFlash(device.device, image.version_id));
+      const job = await api.sdFlash(device.device, image.version_id);
+      track(job);
+      adopt(job.id);
     } catch (e) {
       setError(String(e));
     }
@@ -75,19 +80,17 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
   const flashEsp = async (variant: FirmwareVariant) => {
     if (!firmware || ports.length === 0) return;
     try {
-      track(
-        await api.espFlash({
-          port: ports[0].device,
-          version_id: firmware.version_id,
-          variant_id: variant.id,
-        }),
-      );
+      const job = await api.espFlash({
+        port: ports[0].device,
+        version_id: firmware.version_id,
+        variant_id: variant.id,
+      });
+      track(job);
+      adopt(job.id);
     } catch (e) {
       setError(String(e));
     }
   };
-
-  const job = active[0];
 
   return (
     <Box sx={{ maxWidth: 900, mx: "auto", position: "relative" }}>
@@ -112,8 +115,8 @@ export function ProductionPage({ onExit }: { onExit: () => void }) {
         </Alert>
       )}
 
-      {job ? (
-        <JobPanel jobId={job.id} onDone={refresh} />
+      {jobId ? (
+        <JobPanel jobId={jobId} onDone={refresh} onDismiss={dismiss} />
       ) : (
         <Stack spacing={2}>
           <Card variant="outlined">

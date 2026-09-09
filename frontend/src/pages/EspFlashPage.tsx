@@ -28,7 +28,7 @@ import {
   type SerialPort,
   type Status,
 } from "../api";
-import { useJobs } from "../JobsContext";
+import { useJobSlot, useJobs } from "../JobsContext";
 import { useSelection } from "../SelectionContext";
 import { JobPanel } from "../components/JobPanel";
 import { PageHeader, SectionLabel } from "../components/PageHeader";
@@ -54,7 +54,7 @@ const CATEGORY_ICON: Record<string, JSX.Element> = {
 
 export function EspFlashPage({ status }: { status: Status | null }) {
   const { image, matched, unlocked, setUnlocked } = useSelection();
-  const { track, findActive } = useJobs();
+  const { track } = useJobs();
   const [ports, setPorts] = useState<SerialPort[]>([]);
   const [bundles, setBundles] = useState<FirmwareBundle[]>([]);
   const [variants, setVariants] = useState<FirmwareVariant[]>([]);
@@ -65,7 +65,9 @@ export function EspFlashPage({ status }: { status: Status | null }) {
   const [erase, setErase] = useState(true);
   const [error, setError] = useState("");
 
-  const runningJob = findActive("flash-esp");
+  // Re-attach to a flash already running or just finished, wherever it was
+  // started from, and keep it on screen through its terminal state.
+  const { jobId, adopt, dismiss } = useJobSlot("flash-esp");
 
   const refresh = useCallback(async () => {
     try {
@@ -130,15 +132,15 @@ export function EspFlashPage({ status }: { status: Status | null }) {
   const start = async () => {
     setError("");
     try {
-      track(
-        await api.espFlash({
-          port,
-          version_id: bundleId,
-          variant_id: variantId,
-          baud: baud || undefined,
-          erase_first: erase,
-        }),
-      );
+      const job = await api.espFlash({
+        port,
+        version_id: bundleId,
+        variant_id: variantId,
+        baud: baud || undefined,
+        erase_first: erase,
+      });
+      track(job);
+      adopt(job.id);
     } catch (e) {
       setError(String(e));
     }
@@ -296,8 +298,8 @@ export function EspFlashPage({ status }: { status: Status | null }) {
         />
       </Stack>
 
-      {runningJob ? (
-        <JobPanel jobId={runningJob.id} />
+      {jobId ? (
+        <JobPanel jobId={jobId} onDismiss={dismiss} />
       ) : (
         <Button
           variant="contained"

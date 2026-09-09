@@ -109,6 +109,47 @@ export function useJobs(): JobsState {
   return ctx;
 }
 
+/**
+ * The job a flashing page is currently showing.
+ *
+ * Jobs belong to the station, not to a page or a browser, so a screen that
+ * was not the one which started the work still has to be able to report it.
+ * This picks up anything of `kinds` that is running, and — so an outcome is
+ * not lost to whoever happened to be looking at the right tab — also adopts
+ * one that finished within `recentSeconds`. That matters on the station's own
+ * kiosk display, which is often sitting on a different page while a technician
+ * drives the flash from a laptop. Dismissing hides that job for good.
+ */
+export function useJobSlot(kinds: string | string[], recentSeconds = 600) {
+  const { jobs } = useJobs();
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+  const key = (Array.isArray(kinds) ? kinds : [kinds]).join(",");
+
+  // `jobs` is newest-first, so the first match of each kind is the right one.
+  const candidate = useMemo(() => {
+    const wanted = key.split(",");
+    const mine = jobs.filter((j) => wanted.includes(j.kind));
+    return (
+      mine.find(isActive) ??
+      mine.find(
+        (j) => j.finished_at != null && Date.now() / 1000 - j.finished_at < recentSeconds,
+      )
+    );
+  }, [jobs, key, recentSeconds]);
+
+  useEffect(() => {
+    if (!jobId && candidate && !dismissed.has(candidate.id)) setJobId(candidate.id);
+  }, [candidate, jobId, dismissed]);
+
+  const dismiss = useCallback(() => {
+    if (jobId) setDismissed((d) => new Set(d).add(jobId));
+    setJobId(null);
+  }, [jobId]);
+
+  return { jobId, adopt: setJobId, dismiss };
+}
+
 /** Fetch a job's full log once it is finished (running logs come from the poll). */
 export function useJobLog(id: string | null): string[] {
   const { logFor } = useJobs();
